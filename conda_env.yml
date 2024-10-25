@@ -1,0 +1,12 @@
+name: ARE_review
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pandas=2.1.*
+  - requests=2.31.*
+  - pip=23.*
+  - pip:
+    - backoff==2.2.*
+    - requests-cache==1.1.*
