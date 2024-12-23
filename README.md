@@ -27,11 +27,55 @@ where `[plant_family]` was replaced by each one of the 1,332 plant families obta
 
 2. Literature filtering
 
-We then combined all bibtex files in `WoS_exports` to the file `combined_unfiltered.bib` in the folder `analysis/`.
+We then combined and deduplicates all bibtex files in `WoS_exports` to the files `unfiltered_doi.bib` and `unfiltered_nodoi.bib` in the folder `analysis/`. There were 14,443 records with a doi and 1,428 without a doi. Given that it is much easier to obtain records with a doi and they are the vast majority, we will keep those for now. This was done with script `01_combine_bibtex.py`.
 
+Next, we used Anthropic Sonnet model to evaluate whether each record is likely to contain primary information about flower visitors. The prompt used had this form:
+
+ * System prompt:
+```
+You are a meticulous pollination biologist with extensive experience in reviewing scientific literature on plant-pollinator interactions. Your task is to analyze a scientific paper's title and abstract to predict its content regarding pollination and flower visitation to produce structured data for a meta-analysis.
+```
+
+  * Message:
+```
+Here is the title and abstract of the paper you need to analyze:
+
+<title>
+{title}
+</title>
+
+<abstract>
+{abstract}
+</abstract>
+
+Your goal is to determine two key aspects of the paper:
+
+1. Does the paper report empirical observations of animals visiting angiosperm flowers or gymnosperm reproductive structures? (has_visitor_data)
+2. Does the paper make inferences about pollination agents based solely on plant morphology/physiology, without direct observation? (infers_from_plant)
+
+Important considerations:
+- Be cautious not to confuse seed predators or other non-pollinating visitors with actual pollinators.
+- Consider both angiosperms (flowering plants) and gymnosperms (non-flowering plants with analogous reproductive structures).
+- Distinguish between morphological descriptions related to pollination agent estimation and those unrelated to pollination.
+
+Based on your analysis, provide your determination in the form of a JSON object with two boolean values:
+1. "has_visitor_data": true if the study likely contains primary observations or experiments about pollinators and other flower visitors, false otherwise.
+2. "infers_from_plant": true if the study likely infers pollinating agents based on plant morphology/physiology alone, without direct observation, false otherwise.
+
+Wrap your JSON response in <output> tags. For example:
+<output>
+{{"has_visitor_data": false, "infers_from_plant": true}}
+</output>
+
+Ensure that your determination is based solely on the information provided in the title and abstract, making your best inference about the full study's content."""
+```
+
+`{title}` and `{abstract}` were replaced with the title and abstract of each record.
+
+Results were saved as both a json file (`analysis/flower_visitor_classifications.json`) and a csv table (`analysis/classified_studies.csv`). There were 4,851 abstracts considered promising for flower visitor information.
 
 
 3. Literature download
-Since a lot of the papers are paywalled, we will take a semi-automated approach. We will have a script opening browser windows, and then use Zotero extension to save the pdfs into a collection.
+To download paywalled papers fast, we used a script to retrieve the link from each doi using the crossref API, adding an institutional proxy to the link, and opening them in a browser in batches of 10. We then manually download the papers.
 
 4. 
