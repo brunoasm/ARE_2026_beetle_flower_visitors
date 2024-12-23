@@ -10,6 +10,8 @@ from typing import List, Dict
 import bibtexparser
 from bibtexparser.bparser import BibTexParser
 from bibtexparser.customization import convert_to_unicode
+from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
+from anthropic.types.messages.batch_create_params import Request
 
 def parse_args():
     """Parse command line arguments"""
@@ -45,33 +47,54 @@ def save_results(results, filename='analysis/flower_visitor_classifications.json
 
 def create_classification_prompt(entry: Dict) -> str:
     """Create the prompt for classification"""
-    # Extract title and abstract from BibTeX entry
     title = entry.get('title', '')
     abstract = entry.get('abstract', '')
     
-    return f"""Based on the following title and abstract, respond only with a JSON object containing two boolean values:
+    return f"""Here is the title and abstract of the paper you need to analyze:
 
-1. "has_visitor_data": Are empirical observations of animals visiting flowers reported?
-2. "has_morphological_inference": Are inferences made about potential pollinators based solely on plant morphology/physiology (without direct observation)?
+<title>
+{title}
+</title>
 
-Consider these criteria:
-For has_visitor_data:
-- The study should contain actual observations or measurements of any animals visiting flowers
-- This includes all flower visitors, regardless of whether they are confirmed pollinators
-- The data should be empirical (collected through observation or experiment)
-- Include studies that document any animal-flower interactions
+<abstract>
+{abstract}
+</abstract>
 
-For has_morphological_inference:
-- Look for inferences about pollination syndromes based on flower morphology
-- Include cases where pollinator types are proposed based on flower structure
-- Include studies that discuss adaptations to specific pollinators based on floral traits
-- The inference should be about potential animal pollinators (not wind or self-pollination)
+Your goal is to determine two key aspects of the paper:
 
-Title: {title}
-Abstract: {abstract}
+1. Does the paper report empirical observations of animals visiting angiosperm flowers or gymnosperm reproductive structures? (has_visitor_data)
+2. Does the paper make inferences about pollination agents based solely on plant morphology/physiology, without direct observation? (infers_from_plant)
 
-Respond with a JSON object containing only these two boolean values. Example:
-{{"has_visitor_data": false, "has_morphological_inference": true}}"""
+Important considerations:
+- Be cautious not to confuse seed predators or other non-pollinating visitors with actual pollinators.
+- Consider both angiosperms (flowering plants) and gymnosperms (non-flowering plants with analogous reproductive structures).
+- Distinguish between morphological descriptions related to pollination agent estimation and those unrelated to pollination.
+
+Based on your analysis, provide your determination in the form of a JSON object with two boolean values:
+1. "has_visitor_data": true if the study likely contains primary observations or experiments about pollinators and other flower visitors, false otherwise.
+2. "infers_from_plant": true if the study likely infers pollinating agents based on plant morphology/physiology alone, without direct observation, false otherwise.
+
+Wrap your JSON response in <output> tags. For example:
+<output>
+{{"has_visitor_data": false, "infers_from_plant": true}}
+</output>
+
+Ensure that your determination is based solely on the information provided in the title and abstract, making your best inference about the full study's content."""
+
+def extract_json_from_xml(text: str) -> Dict:
+    """Extract JSON from XML output tags"""
+    import re
+    
+    # Find content between <output> tags
+    match = re.search(r'<output>\s*(\{.*?\})\s*</output>', text, re.DOTALL)
+    if match:
+        json_str = match.group(1)
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            print(f"Failed to parse JSON: {json_str}")
+            return None
+    return None
 
 def classify_study_direct(client: Anthropic, entry: Dict) -> Dict:
     """Use Claude API directly to classify a study"""
@@ -79,71 +102,112 @@ def classify_study_direct(client: Anthropic, entry: Dict) -> Dict:
     for attempt in range(max_retries):
         try:
             response = client.messages.create(
-                model="claude-3-sonnet-20240229",
-                max_tokens=100,
+                model="claude-3-5-sonnet-20241022",
+                max_tokens=4096,
                 temperature=0,
+                system="You are a meticulous pollination biologist with extensive experience in reviewing scientific literature on plant-pollinator interactions. Your task is to analyze a scientific paper's title and abstract to predict its content regarding pollination and flower visitation to produce structured data for a meta-analysis.",
                 messages=[{
                     "role": "user",
                     "content": create_classification_prompt(entry)
                 }]
             )
-            return json.loads(response.content[0].text.strip())
+            result = extract_json_from_xml(response.content[0].text.strip())
+            if result:
+                return result
         except Exception as e:
             if attempt == max_retries - 1:
                 print(f"Failed to classify after {max_retries} attempts: {e}")
                 return None
             time.sleep(2 ** attempt)
 
-def process_batch_results(client: Anthropic, batch_id: str) -> Dict[str, Dict]:
-    """Process results from a batch classification"""
-    results = {}
-    for result in client.messages.batches.results(batch_id):
-        if result.result.type == "succeeded":
-            try:
-                classification = json.loads(result.result.message.content[0].text.strip())
-                results[result.custom_id] = classification
-            except Exception as e:
-                print(f"Error processing result for {result.custom_id}: {e}")
-                results[result.custom_id] = None
-        else:
-            print(f"Failed result for {result.custom_id}: {result.result.type}")
-            results[result.custom_id] = None
-    return results
+def sanitize_custom_id(id_str: str) -> str:
+    """Convert an ID into a valid custom_id format for the batches API"""
+    if not id_str:
+        return "unknown_id"
+    
+    # Replace any invalid characters with underscores
+    import re
+    sanitized = re.sub(r'[^a-zA-Z0-9_-]', '_', id_str)
+    
+    # Truncate to 64 characters if needed
+    sanitized = sanitized[:64]
+    
+    # Ensure it's not empty
+    if not sanitized:
+        return "unknown_id"
+        
+    return sanitized
 
 def classify_studies_batch(client: Anthropic, entries: List[Dict]) -> Dict[str, Dict]:
     """Use Claude Batches API to classify multiple studies"""
     # Prepare batch requests
     requests = []
+    id_mapping = {}  # To map sanitized IDs back to original IDs
+    
     for entry in entries:
-        id_key = entry.get('doi', entry.get('ID', ''))
-        requests.append({
-            "custom_id": id_key,
-            "params": {
-                "model": "claude-3-sonnet-20240229",
-                "max_tokens": 100,
-                "temperature": 0,
-                "messages": [{
+        original_id = entry.get('doi', entry.get('ID', ''))
+        sanitized_id = sanitize_custom_id(original_id)
+        id_mapping[sanitized_id] = original_id
+        
+        requests.append(Request(
+            custom_id=sanitized_id,
+            params=MessageCreateParamsNonStreaming(
+                model="claude-3-5-sonnet-20241022",
+                max_tokens=4096,
+                temperature=0,
+                messages=[{
                     "role": "user",
                     "content": create_classification_prompt(entry)
-                }]
-            }
-        })
+                }],
+                system="You are a meticulous pollination biologist with extensive experience in reviewing scientific literature on plant-pollinator interactions. Your task is to analyze a scientific paper's title and abstract to predict its content regarding pollination and flower visitation to produce structured data for a meta-analysis."
+            )
+        ))
 
     # Create batch
-    batch = client.messages.batches.create(requests=requests)
+    message_batch = client.messages.batches.create(requests=requests)
     
     # Poll for completion
-    while batch.processing_status == "in_progress":
+    while message_batch.processing_status == "in_progress":
         print("Waiting for batch processing...")
         time.sleep(30)
-        batch = client.messages.batches.retrieve(batch.id)
+        message_batch = client.messages.batches.retrieve(message_batch.id)
 
     # Process results
-    if batch.processing_status == "ended":
-        return process_batch_results(client, batch.id)
+    if message_batch.processing_status == "ended":
+        batch_results = process_batch_results(client, message_batch.id)
+        # Map results back to original IDs
+        return {id_mapping[sanitized_id]: result 
+                for sanitized_id, result in batch_results.items()}
     else:
-        print(f"Batch failed with status: {batch.processing_status}")
+        print(f"Batch failed with status: {message_batch.processing_status}")
         return {}
+
+def process_batch_results(client: Anthropic, batch_id: str) -> Dict[str, Dict]:
+    """Process results from a batch classification"""
+    results = {}
+    for result in client.messages.batches.results(batch_id):
+        match result.result.type:
+            case "succeeded":
+                try:
+                    classification = extract_json_from_xml(result.result.message.content[0].text.strip())
+                    if classification:
+                        results[result.custom_id] = classification
+                    else:
+                        print(f"Failed to extract JSON for {result.custom_id}")
+                        results[result.custom_id] = None
+                except Exception as e:
+                    print(f"Error processing result for {result.custom_id}: {e}")
+                    results[result.custom_id] = None
+            case "errored":
+                print(f"Request error for {result.custom_id}: {result.result.error}")
+                results[result.custom_id] = None
+            case "expired":
+                print(f"Request expired for {result.custom_id}")
+                results[result.custom_id] = None
+            case "canceled":
+                print(f"Request canceled for {result.custom_id}")
+                results[result.custom_id] = None
+    return results
 
 def save_classifications_csv(entries: List[Dict], results: Dict, filename='analysis/classified_studies.csv'):
     """Save classifications to CSV file"""
@@ -159,7 +223,7 @@ def save_classifications_csv(entries: List[Dict], results: Dict, filename='analy
             'doi': entry.get('doi', ''),
             'journal': entry.get('journal', ''),
             'has_visitor_data': classification.get('has_visitor_data', None),
-            'has_morphological_inference': classification.get('has_morphological_inference', None)
+            'infers_from_plant': classification.get('infers_from_plant', None)
         }
         records.append(record)
     
@@ -179,8 +243,13 @@ def main():
     
     # Load BibTeX files
     entries = []
-    entries.extend(load_bibtex('analysis/unfiltered_doi.bib'))
-    entries.extend(load_bibtex('analysis/unfiltered_nodoi.bib'))
+    print("Load bibtex")
+    if args.test:
+        entries.extend(load_bibtex('analysis/test.bib'))
+    else:
+        entries.extend(load_bibtex('analysis/unfiltered_doi.bib'))
+        #entries.extend(load_bibtex('analysis/unfiltered_nodoi.bib'))
+    print("Bibtex loaded")
     
     # Apply test mode limit if specified
     if args.test:

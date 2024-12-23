@@ -1,0 +1,54 @@
+{
+  "10.1007/s00606-004-0204-5": {
+    "has_visitor_data": false,
+    "infers_from_plant": false
+  },
+  "10.1016/j.tfp.2022.100353": {
+    "has_visitor_data": false,
+    "infers_from_plant": false
+  },
+  "10.1093/aobpla/plab014": {
+    "has_visitor_data": false,
+    "infers_from_plant": false
+  },
+  "10.1007/s00425-018-3006-7": {
+    "has_visitor_data": false,
+    "infers_from_plant": false
+  },
+  "10.1002/2688-8319.12363": {
+    "has_visitor_data": true,
+    "infers_from_plant": false
+  },
+  "10.1093/jee/toab075": {
+    "has_visitor_data": true,
+    "infers_from_plant": false
+  },
+  "10.1093/jee/toad044": {
+    "has_visitor_data": true,
+    "infers_from_plant": false
+  },
+  "10.1111/j.1469-8137.1985.tb03643.x": {
+    "has_visitor_data": false,
+    "infers_from_plant": false
+  },
+  "10.1111/j.1744-7429.2009.00571.x": {
+    "has_visitor_data": false,
+    "infers_from_plant": false
+  },
+  "10.1093/aob/mcm219": {
+    "has_visitor_data": false,
+    "infers_from_plant": false
+  },
+  "10.1038/s41438-020-00392-z": {
+    "has_visitor_data": false,
+    "infers_from_plant": false
+  },
+  "10.1007/s00425-024-04418-x": {
+    "has_visitor_data": false,
+    "infers_from_plant": false
+  },
+  "10.1111/jeb.12492": {
+    "has_visitor_data": false,
+    "infers_from_plant": true
+  }
+}
