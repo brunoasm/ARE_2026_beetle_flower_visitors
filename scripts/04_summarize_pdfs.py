@@ -2,6 +2,8 @@
 import anthropic
 from anthropic import Anthropic
 import os, re
+import tempfile
+import subprocess
 import time
 import json
 import argparse
@@ -12,6 +14,7 @@ from bibtexparser.customization import convert_to_unicode
 import base64
 import pikepdf
 import io
+import shutil
 from typing import List, Dict, Optional
 from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
 from anthropic.types.messages.batch_create_params import Request
@@ -35,120 +38,91 @@ def parse_args():
                        help='Target DPI for PDF image compression (default: 72)')
     return parser.parse_args()
 
-def optimize_pdf(pdf_data: bytes, target_dpi: int = 72) -> bytes:
-    """Optimize PDF for API transmission using aggressive compression techniques."""
-    input_buffer = io.BytesIO(pdf_data)
-    output_buffer = io.BytesIO()
-    
-    try:
-        with pikepdf.Pdf.open(input_buffer) as pdf:
-            try:
-                # Remove unnecessary elements
-                for page in pdf.pages:
-                    try:
-                        # Clean up page elements
-                        for key in ['/Annots', '/AF', '/AA', '/Thumb', '/PieceInfo', '/Metadata']:
-                            if key in page:
-                                del page[key]
-                        
-                        # Process images with enhanced compression
-                        resources = page.get('/Resources', {})
-                        if '/XObject' in resources:
-                            xobjects = resources['/XObject']
-                            for key, xobject in list(xobjects.items()):
-                                try:
-                                    if (isinstance(xobject, pikepdf.Stream) and 
-                                        xobject.get('/Subtype') == '/Image'):
-                                        try:
-                                            width = float(xobject.get('/Width', 0))
-                                            height = float(xobject.get('/Height', 0))
-                                            if width > 0 and height > 0:
-                                                bbox = [float(x) for x in page.get('/MediaBox')]
-                                                page_width = bbox[2] - bbox[0]
-                                                if page_width > 0:
-                                                    # Calculate current DPI
-                                                    orig_dpi = int(72 * width / page_width)
-                                                    
-                                                    # Apply more aggressive scaling for larger images
-                                                    if orig_dpi > target_dpi:
-                                                        scale = min(target_dpi / orig_dpi, 0.5)  # Maximum 50% reduction
-                                                        new_width = max(int(width * scale), 300)  # Minimum width 300px
-                                                        new_height = max(int(height * scale), 300)  # Minimum height 300px
-                                                        
-                                                        # Process different color spaces
-                                                        color_space = xobject.get('/ColorSpace')
-                                                        if color_space in ['/DeviceRGB', '/DeviceGray']:
-                                                            try:
-                                                                # Apply JPEG compression
-                                                                stream_dict = {
-                                                                    'Type': pikepdf.Name('/XObject'),
-                                                                    'Subtype': pikepdf.Name('/Image'),
-                                                                    'Width': new_width,
-                                                                    'Height': new_height,
-                                                                    'BitsPerComponent': 8,
-                                                                    'ColorSpace': pikepdf.Name(color_space),
-                                                                    'Filter': pikepdf.Name('/DCTDecode'),
-                                                                    'Quality': 60  # More aggressive JPEG compression
-                                                                }
-                                                                xobject.write(
-                                                                    pikepdf.Stream(pdf, 
-                                                                                 xobject.read_raw_bytes(),
-                                                                                 stream_dict)
-                                                                )
-                                                            except Exception as e:
-                                                                print(f"Warning: Failed to optimize image: {str(e)}")
-                                        except Exception as e:
-                                            print(f"Warning: Error processing image dimensions: {str(e)}")
-                                except Exception as e:
-                                    print(f"Warning: Error processing XObject: {str(e)}")
-                    except Exception as e:
-                        print(f"Warning: Error processing page: {str(e)}")
-                        continue
-                
-                # Remove document-level metadata
-                try:
-                    with pdf.open_metadata() as meta:
-                        meta.clear()
-                except Exception as e:
-                    print(f"Warning: Failed to clear metadata: {str(e)}")
-                
-                # Remove additional document-level elements
-                for key in ['/AcroForm', '/Metadata', '/OCProperties', '/StructTreeRoot']:
-                    if key in pdf.Root:
-                        try:
-                            del pdf.Root[key]
-                        except Exception as e:
-                            print(f"Warning: Failed to remove {key}: {str(e)}")
-                
-                # Save with maximum compression
-                pdf.save(output_buffer,
-                        compress_streams=True,
-                        preserve_pdfa=False,
-                        object_stream_mode=pikepdf.ObjectStreamMode.generate,
-                        linearize=False)  # Disable linearization for smaller file size
-                
-            except Exception as e:
-                print(f"Warning: Error during PDF optimization: {str(e)}")
-                return pdf_data
-    
-    except Exception as e:
-        print(f"Warning: Failed to open PDF: {str(e)}")
-        return pdf_data
-    
-    optimized_data = output_buffer.getvalue()
-    
-    # Print size comparison
-    input_size = len(pdf_data) / 1024 / 1024  # Convert to MB
-    output_size = len(optimized_data) / 1024 / 1024  # Convert to MB
-    print(f"PDF optimization: {input_size:.2f}MB -> {output_size:.2f}MB "
-          f"({(output_size/input_size)*100:.1f}% of original)")
-    
-    # Check final size
-    if len(optimized_data) > 32 * 1024 * 1024:
-        raise ValueError(f"Optimized PDF size ({output_size:.1f}MB) exceeds 32MB limit")
-    
-    return optimized_data
 
+def optimize_pdf(pdf_data: bytes) -> bytes:
+    """
+    Optimize PDF file size using Ghostscript with settings optimized for API submission.
+    Uses 72 DPI (screen resolution) and 60% JPEG quality since we don't need print quality
+    for machine learning analysis.
+    
+    Args:
+        pdf_data: Raw PDF bytes to optimize
+    
+    Returns:
+        Optimized PDF as bytes, or original if optimization fails
+    """
+    # Verify Ghostscript is available
+    try:
+        gs_path = shutil.which('gs')
+        if not gs_path:
+            raise ValueError("Ghostscript not found. Please install Ghostscript.")
+    except Exception as e:
+        print(f"Error checking for Ghostscript: {e}")
+        return pdf_data
+
+    # Create temporary directory for processing
+    with tempfile.TemporaryDirectory() as temp_dir:
+        input_path = Path(temp_dir) / "input.pdf"
+        output_path = Path(temp_dir) / "output.pdf"
+        
+        # Write input PDF to temporary file
+        with open(input_path, 'wb') as f:
+            f.write(pdf_data)
+        
+        # Configure Ghostscript commands for API-appropriate optimization
+        gs_command = [
+            'gs',
+            '-sDEVICE=pdfwrite',
+            '-dNOPAUSE',
+            '-dQUIET',
+            '-dBATCH',
+            '-dPDFSETTINGS=/screen',     # Base profile for screen viewing
+            '-dCompatibilityLevel=1.4',   # Modern but widely compatible PDF version
+            # Image settings
+            '-dDownsampleColorImages=true',
+            '-dDownsampleGrayImages=true',
+            '-dDownsampleMonoImages=true',
+            '-dColorImageResolution=72',   # Screen resolution DPI
+            '-dGrayImageResolution=72',
+            '-dMonoImageResolution=72',
+            # JPEG compression
+            '-dJPEGQ=60',                 # 60% JPEG quality
+            # General compression
+            '-dCompressPages=true',
+            '-dUseFlateCompression=true',
+            '-dCompressFonts=true',
+            '-dEmbedAllFonts=true',
+            '-dSubsetFonts=true',
+            # Output configuration
+            '-sOutputFile=' + str(output_path),
+            str(input_path)
+        ]
+        
+        try:
+            # Run Ghostscript with a reasonable timeout
+            subprocess.run(gs_command, check=True, capture_output=True, timeout=300)
+            
+            # Report size change
+            output_size = output_path.stat().st_size / (1024 * 1024)  # MB
+            input_size = input_path.stat().st_size / (1024 * 1024)    # MB
+            
+            # Read and return optimized PDF
+            with open(output_path, 'rb') as f:
+                optimized_data = f.read()
+                
+            # Check if we're under API limit
+            if len(optimized_data) > 32 * 1024 * 1024:
+                raise ValueError(f"Optimized PDF size ({output_size:.1f}MB) exceeds 32MB limit")
+                
+            return optimized_data
+                
+        except subprocess.CalledProcessError as e:
+            print(f"Ghostscript error: {e.stderr.decode()}")
+            return pdf_data
+        except Exception as e:
+            print(f"Optimization error: {e}")
+            return pdf_data
+  
 def find_bibtex_files(root_dir: Path) -> List[Path]:
     """Find all BibTeX files within the given directory tree"""
     return list(root_dir.glob('**/*.bib'))
@@ -200,7 +174,7 @@ def load_pdf(filepath: str, target_dpi: int = 72) -> Optional[str]:
             pdf_data = f.read()
             
         # Optimize PDF
-        optimized_data = optimize_pdf(pdf_data, target_dpi)
+        optimized_data = optimize_pdf(pdf_data)
         
         # Report optimization results
         original_size = len(pdf_data) / 1024 / 1024  # MB
@@ -218,49 +192,68 @@ def load_pdf(filepath: str, target_dpi: int = 72) -> Optional[str]:
 
 def create_extraction_prompt(doi: str) -> str:
     """Create prompt for extracting flower visitor information"""
-    prompt = '''Your objective is to carefully analyze this paper and extract empirical observations of flower visitors. Follow these steps:
+    prompt = '''Your objective is to carefully analyze this paper and extract empirical observations of flower visitors.
+
+Please follow these steps to analyze the paper and extract the required information:
 
 1. Determine if the paper contains any empirical observations of flower visitors.
-2. If yes, extract all records of flower visitors. Each record should represent observations of one plant species in one country.
+2. If empirical observations are present, extract all records of flower visitors. Each record should represent observations of one plant species in one locality.
 
-For each record, you must extract the following information:
-- Country where observations were made
+For each record, extract the following information:
+- Location: country, state/province (administrative area level 2), and locality
 - Plant species (use the most precise taxonomic level provided in the paper)
 - Method of observation (brief description)
-- Time of observation (day/night/both)
-- List of all flower visitors observed (use exact names as they appear in the publication). Be comprehensive but avoid false positives
+- Time of observation (list: day/night/dusk/dawn)
+- List of all flower visitors observed (use exact names as they appear in the publication)
 
-Additionally, for each record, you need to determine:
-- beetle_visitors: Whether any of the flower visitors reported is a beetle (Coleoptera)
-- beetle_pollinators: Whether any of the effective pollinators reported is a beetle (Coleoptera)
-- methods_unbiased: Whether the observations are unbiased. Unbiased observations must have been made during multiple times during the day and the night, and allowed for observations of flower visitors of multiple sizes and behaviors. For example, colored traps bias towards insects attracted to those colors, sweep nets are biased towards insects that fly more and that are intermediate in size. If the study specifically assumes the identity of the pollinators and flower visitors before performing observations, the methods are biased.
-- methods_biased_resoning: one-sentence explanation for the evidence supporting the assessment of 'nmethods_unbiased"
-- methods_net: Whether the main method was direct sampling with a sweep net
+Additionally, for each record, determine:
+- Whether any of the flower visitors reported is a beetle (Coleoptera)
+- Whether any of the effective pollinators reported is a beetle (Coleoptera)
+- Whether the observations are unbiased (must have been made during multiple times during the day and night, allowing for observations of flower visitors of multiple sizes and behaviors)
+- Whether the main method was direct observation or direct sampling with a sweep net
 
 Important considerations:
 - Only include primary observations from the paper
 - If a record involves more than one plant species or country, separate it into multiple records
+- Do not add any variables to the output that are not explicitly listed in the example JSON structure
 
-Provide your thought process in <extraction_process> tags, then provide the final output in this JSON format. Wrap your JSON response in <output> tags. For example:
+Before providing your final output, please wrap your analysis in <paper_analysis> tags. In this analysis:
+
+a. Identify and quote relevant sections of the paper that contain empirical observations of flower visitors.
+b. List out each plant species mentioned in these observations.
+c. For each plant species, extract the required information (location, method, time, visitors, etc.).
+d. Assess whether any visitors or pollinators are beetles by listing out all visitors/pollinators and marking those that are beetles.
+e. Evaluate whether the methods are unbiased by listing out the observation times and methods used.
+
+This analysis ensures a thorough interpretation of the data. It's okay for this section to be quite long, as it may involve listing out multiple plant species and their associated information.
+
+After your analysis, provide the final output in the following JSON format, wrapped in <output> tags:
+
 <output>
 {
   "doi": "paper_doi",
   "has_visitor_data": true/false,
+  "has_visitor_notes": "brief explanation of evidence supporting the assessment",
   "records": [
     {
       "country": "country_name",
+      "state_province": "state_name",
+      "locality": "specific_location",
       "plant_species": "species_name",
       "method": "brief_method_description",
-      "observation_time": "day/night/both",
+      "observation_time": ["time1", "time2", ...],
       "visitors": ["visitor1", "visitor2", ...],
       "beetle_visitors": true/false,
       "beetle_pollinators": true/false,
       "methods_unbiased": true/false,
-      "methods_net": true/false
+      "methods_biased_reasoning": "one-sentence explanation for unbiased assessment",
+      "methods_direct": true/false
     }
   ]
 }
-</output>'''
+</output>
+
+Remember to be comprehensive in your analysis while avoiding false positives. Ensure that your output strictly adheres to the provided JSON structure without adding any additional variables.'''
     return prompt
 
 def extract_json_from_response(text: str) -> Dict:
@@ -286,7 +279,7 @@ def process_pdf_direct(client: Anthropic, pdf_data: str, doi: str) -> Dict:
                 model="claude-3-5-sonnet-20241022",
                 max_tokens=4096,
                 temperature=0,
-                system="You are a scientific research assistant specializing in analyzing papers about plant-pollinator interactions.",
+                system="You are a scientific research assistant specializing in analyzing papers about plant-pollinator interactions. Your task is to carefully analyze a scientific paper and extract empirical observations of flower visitors.",
                 messages=[{
                     "role": "user",
                     "content": [
@@ -317,6 +310,7 @@ def process_pdf_direct(client: Anthropic, pdf_data: str, doi: str) -> Dict:
                 ]
             )
             result = extract_json_from_response(response.content[0].text)
+            print(response.content[0].text)
             if result:
                 if result.get('records'):
                     for record in result['records']:
