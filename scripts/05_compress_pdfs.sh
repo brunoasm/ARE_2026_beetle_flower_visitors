@@ -95,7 +95,7 @@ compress_pdf() {
 export -f format_size compress_pdf
 
 # Main script
-SOURCE_DIR="pdfs/export_20250131/files"
+SOURCE_DIR="pdfs/export_20250131/files_kept"
 
 # Check if source directory exists
 if [ ! -d "$SOURCE_DIR" ]; then
