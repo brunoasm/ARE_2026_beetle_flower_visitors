@@ -13,9 +13,9 @@ from anthropic.types.message_create_params import MessageCreateParamsNonStreamin
 from anthropic.types.messages.batch_create_params import Request
 
 # Configuration variables for easy modification
-BATCH_SIZE = 6                # Number of PDFs to process in each batch
+BATCH_SIZE = 5                # Number of PDFs to process in each batch
 SIMULTANEOUS_BATCHES = 4       # Number of batches to process simultaneously
-TEST_MODE_BATCHES = 20          # Number of batches to process in test mode
+TEST_MODE_BATCHES = 3          # Number of batches to process in test mode
 BATCH_CHECK_INTERVAL = 30      # Seconds between batch status checks
 BATCH_SUBMISSION_INTERVAL = 20 # Seconds between batch submissions
 BIBTEX_PATH = 'pdfs/export_20250131/export_20250131.updated.bib'
@@ -95,10 +95,9 @@ For each record, extract the following information:
 - Method of observation (brief description)
 - Time of observation (list with four allowed values: day/night/dusk/dawn)
 - List of all flower visitors observed (use exact names as they appear in the publication)
-
-Additionally, for each record, determine:
 - Whether any of the flower visitors reported is a beetle (Coleoptera)
 - Whether any of the effective pollinators reported is a beetle (Coleoptera)
+- Natural history information for beetle pollinators, if any.
 - Whether the observations are unbiased. Consider as unbiased if made during multiple times during the day and night (no need to cover the full 24-hour cycle) and allowing for observations of flower visitors of multiple sizes and behaviors.
 
 Important considerations:
@@ -106,7 +105,7 @@ Important considerations:
 - If a record involves more than one plant species or country, separate it into multiple records. Each record must have a single country and a single plant species.
 - Do not add any variables to the output that are not explicitly listed in the example JSON structure.
 - Do not use external information to update taxonomic names. List common names and taxonomic names as they are written in the source.
-- if anything is unknown, use `none` or empty lists, following JSON best practices.
+- if anything is unknown, use `none` or empty lists, as appropriate.
 
 <paper_analysis>
 1. Identify and quote relevant sections of the paper that contain empirical primary observations of flower visitors. If there is no primary data, explain why and do not create any records.
@@ -130,10 +129,10 @@ Important considerations:
 
 6. Double-check your findings for accuracy and completeness.Ensure that you haven't missed any relevant information or made any incorrect assumptions.
 
-7. Summarize any noteworthy facts about beetles discovered in this study, if any.
+7. Summarize any noteworthy facts about beetles discovered in this study, if any. Include natural history details about all life stages mentioned.
 </paper_analysis>
 
-This analysis ensures a thorough interpretation of the data. It is okay for this section to be quite long, as it may involve listing out multiple plant species and their associated information. Always be thorough during the analysis and list all of the data necessary to retrieve all records and all flower visitors for each record.
+This analysis ensures a thorough interpretation of the data, it must always be wrapped within the xml tag <paper_analysis>. It is okay for this section to be quite long, as it may involve listing out multiple plant species and their associated information. Always be thorough during the analysis and list all of the data necessary to retrieve all records and all flower visitors for each record.
 
 After your analysis, provide the final output in the following JSON format, wrapped in <output> tags. Here goes an explanation of the output data
 
@@ -141,7 +140,12 @@ After your analysis, provide the final output in the following JSON format, wrap
 {
   "has_primary_visitor_data": whether there are primary observations about flower visitors in this study (boolean),
   "has_visitor_notes": brief explanation of evidence supporting the assessment in has_primary_visitor_data (string),
+  "response_truncated": whether there were too many plant or visitor records to be retrieved and the response is not comprehensive,
   "noteworthy_beetle_fact": one or two sentences summarizing noteworthy facts about beetles discovered in this study (string),
+  "beetle_pollen_feeders": whether the paper mentions any beetle pollen feeder as adult (boolean),
+  "beetle_nectar_feeders": whether the paper mentions any beetle drinking nectar as adult (boolean),
+  "beetle_florivores: whether the paper explicitly states that any beetle adults (not larvae) feec or damage flower parts other than pollen and nectar, such as stems, petals, ovules, stamens, stigmas, etc. (boolean),
+  "beetle_larval_breeding": whether the paper mentions beetle larvae feeding on parts of the same plant visited by adults (boolean),
   "records": [ (empty list if `has_primary_visitor_data` is False)
     {
       "country": country name (string),
@@ -167,8 +171,14 @@ And here goes an output example:
 {
   "has_visitor_data": true,
   "has_visitor_notes": "brief explanation of evidence supporting the true assessment",
+  "response_truncated": false,
   "noteworthy_beetle_fact": "Some fact"
+  "beetle_pollen_feeders": true, 
+  "beetle_nectar_feeders": false,
+  "beetle_florivores: false,
+  "beetle_larval_breeding": false,
   "records": [
+
     {
       "country": "country_name",
       "state_province": "state_name",
@@ -241,9 +251,9 @@ def save_results(results: Dict, filename: str = None):
         with open(output_path, 'w') as f:
             json.dump(results, f, indent=2)
 
-def process_batches_window(client: Anthropic, all_pdfs: List[tuple], output_file: str) -> Dict[str, Dict]:
+def process_batches_window(client: Anthropic, all_pdfs: List[tuple], output_file: str, existing_results: Dict[str, Dict]) -> Dict[str, Dict]:
     """Process PDFs in sliding windows of multiple simultaneous batches"""
-    results = {}
+    results = existing_results.copy()  # Start with existing results instead of empty dict
     
     for window_start in range(0, len(all_pdfs), SIMULTANEOUS_BATCHES * BATCH_SIZE):
         window_pdfs = all_pdfs[window_start:window_start + (SIMULTANEOUS_BATCHES * BATCH_SIZE)]
@@ -348,15 +358,16 @@ def main():
     print(f"Loaded {len(id_to_entry)} entries from BibTeX file")
     
     # Load existing results if any
-    results = {}
+    existing_results = {}
     if os.path.exists(args.output):
         with open(args.output, 'r') as f:
-            results = json.load(f)
+            existing_results = json.load(f)
+            print(f"Loaded {len(existing_results)} existing results")
     
     # Prepare list of PDFs to process
     to_process = []
     for bib_id, entry in id_to_entry.items():
-        if bib_id not in results:
+        if bib_id not in existing_results:
             if 'pdf_path' in entry:
                 # Construct full path by joining BibTeX directory with relative path
                 bibtex_dir = Path(BIBTEX_PATH).parent
@@ -378,10 +389,11 @@ def main():
         to_process = to_process[:max_pdfs]
         print(f"Test mode: processing {len(to_process)} PDFs in {TEST_MODE_BATCHES} batches")
     
-    # Process PDFs in batch windows
+    # Process PDFs in batch windows, passing existing results
     if to_process:
-        batch_results = process_batches_window(client, to_process, args.output)
-        results.update(batch_results)
+        results = process_batches_window(client, to_process, args.output, existing_results)
+    else:
+        results = existing_results
     
     # Save final results
     save_results(results, args.output)
