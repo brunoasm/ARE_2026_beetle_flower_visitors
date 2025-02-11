@@ -4,12 +4,12 @@ output:
   word_document:
     reference_docx: default
 bibliography: "pdfs/export_20250131/export_20250131.updated.sanitized.bib"
-csl: "scripts/annual-reviews-alphabetical.csl"
+csl: "scripts/annual-reviews-alphabetical_modified.csl"
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
-library(dplyr)
+library(tidyverse)
 library(knitr)
 library(kableExtra)
 
@@ -54,23 +54,40 @@ safe_sapply <- function(x, fun) {
 
 # Process the dataframe
 formatted_df <- plant_family_output_df %>%
-  mutate(
-    # Convert boolean columns to Yes/No
-    beetle_visitors = ifelse(beetle_visitors, "Yes", "No"),
-    beetle_pollinators = ifelse(beetle_pollinators, "Yes", "No"),
-    # Format beetle families as comma-separated lists
-    beetle_families = safe_sapply(beetle_families, format_beetle_families),
-    # Format citations
-    references = safe_sapply(bibtex_ids, format_citations)
-  ) %>%
-  # Select and rename columns
-  select(
-    `Plant Family` = plant_family,
-    `Beetle Visitors` = beetle_visitors,
-    `Beetle Pollinators` = beetle_pollinators,
-    `Beetle Families` = beetle_families,
-    `References` = references
-  )
+    group_by(plant_family) %>%
+    mutate(
+        beetle_families = list(unique(unlist(beetle_families)))
+    ) %>%
+    ungroup() %>%
+    mutate(
+        # Create column for beetle state
+        beetle_state = case_when(beetle_visitors & beetle_pollinators ~ 'pollinator',
+                                 beetle_visitors ~ "nonpollinating_visitors",
+                                 TRUE ~ "no_beetles"),
+        references = safe_sapply(bibtex_ids, format_citations),
+        beetle_families = safe_sapply(beetle_families, format_beetle_families)
+    ) %>%
+    select(-beetle_visitors, -beetle_pollinators) %>%
+    # Group and concatenate references before pivot
+    group_by(plant_family, beetle_state, beetle_families) %>%
+    summarise(
+        references = paste(references, collapse = "; "),
+        .groups = "drop"
+    ) %>%
+    pivot_wider(
+        names_from = beetle_state,
+        values_from = references,
+        values_fill = NA
+    ) %>%
+    # Select and rename columns
+    select(
+        `Plant Family` = plant_family,
+        `Pollinating Beetles` = pollinator,
+        `Non-pollinating Visitors` = nonpollinating_visitors,
+        `No Beetle Visitors` = no_beetles,
+        `Beetle Families` = beetle_families
+    ) %>%
+    mutate(across(everything(), ~replace_na(., "")))
 
 ```
 

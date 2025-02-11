@@ -27,6 +27,8 @@ library(deeptime)
 library(ape)
 library(ggtree)
 library(phytools)
+library(vegan)
+library(ggrepel)
 
 use_condaenv("ARE_review")
 rm(list=ls())
@@ -1136,7 +1138,7 @@ p1 = ggplot() +
                         labels = c(0,0.5,1),
                         option = "turbo") +
   # Theme customization
-  labs(title = "Beetle flower visitors", x = NULL, y = NULL) +
+  labs(title = "Plants with beetle flower visitors", x = NULL, y = NULL) +
   theme_minimal() +
   guides(fill = "none", alpha="none",
          size = guide_legend(
@@ -1154,7 +1156,8 @@ p1 = ggplot() +
     legend.box = "horizontal",
     legend.key.size = unit(0.4, "lines"),
     legend.spacing.x = unit(0.1, "cm"),
-    legend.margin = margin(t = 0, r = 0, b = 0, l = 0, unit = "pt"))
+    legend.margin = margin(t = 0, r = 0, b = 0, l = 0, unit = "pt")) +
+  ylim(-60,90)
 
 p1
 ```
@@ -1180,10 +1183,11 @@ p2 = ggplot() +
                         limits = c(0, 1),
                         option = "turbo") +
   # Theme customization
-  labs(title = "Beetle Pollinators", x = NULL, y = NULL) +
+  labs(title = "Plants with beetle pollinators", x = NULL, y = NULL) +
   theme_minimal() +
   guides(fill = "none", alpha="none", color = "none", size = "none") +
-  theme(legend.position = 'bottom', text = element_text(size=8))
+  theme(legend.position = 'bottom', text = element_text(size=8)) +
+  ylim(-60,90)
 
 p2
 ```
@@ -1864,6 +1868,151 @@ plant_family_output_df %>%
   ungroup() %>%
   arrange(desc(N_references))
 ```
+
+# Analising co-occurence patterns
+We will now analyse co-occurence patterns in beetle families and whether they are related to pollination. Let's first create the dataframe we will need. In this case, we will only keep the records in which at least one beetle family has been identified:
+```{r}
+df_for_pcoa <- filtered_state_level_records %>%
+  # Create and recode beetle status
+  mutate(
+    beetle_status = case_when(
+      beetle_visitors & beetle_pollinators ~ 'pollinators',
+      beetle_visitors ~ 'nonpollinators',
+      TRUE ~ 'none'
+    ),
+    beetle_status = factor(beetle_status, levels = c("pollinators", "nonpollinators", "none")),
+    record_id = 1:n()
+  ) %>%
+  
+  # Process beetle families
+  rowwise() %>%
+  mutate(
+    beetle_families = list(
+      if (!is.null(beetle_families) && length(unlist(beetle_families)) > 0) {
+        unique(get_accepted_family(unlist(beetle_families)))
+      } else {
+        character(0)
+      }
+    )
+  ) %>%
+  
+  # Create presence/absence matrix
+  select(record_id, plant_family_name, beetle_status, beetle_families) %>%
+  unnest(beetle_families) %>%
+  mutate(present = TRUE) %>%
+  pivot_wider(
+    names_from = beetle_families,
+    values_from = present,
+    values_fill = FALSE
+  )
+
+df_for_pcoa
+```
+
+Let's now do the PCoA and plot:
+```{r}
+# Create distance matrix using only beetle family columns
+beetle_matrix <- df_for_pcoa %>%
+  select(-record_id, -plant_family_name, -beetle_status) %>%
+  as.matrix()
+
+# Perform PCoA using Jaccard distance
+pcoa <- cmdscale(vegdist(beetle_matrix, method = "jaccard"), k = 2, eig = TRUE)
+
+# Create points dataframe
+points_df <- data.frame(
+  PCoA1 = pcoa$points[,1],
+  PCoA2 = pcoa$points[,2],
+  beetle_status = df_for_pcoa$beetle_status
+)
+
+# Calculate species scores for ALL families
+species_scores <- cor(beetle_matrix, pcoa$points)
+all_arrows_df <- data.frame(
+  Family = colnames(beetle_matrix),
+  PCoA1 = species_scores[,1],
+  PCoA2 = species_scores[,2]
+) %>%
+  mutate(vector_length = sqrt(PCoA1^2 + PCoA2^2))
+
+# Get top 10 for labeled arrows
+arrows_df <- all_arrows_df %>%
+  arrange(desc(vector_length)) %>%
+  slice_head(n = 8)
+
+# Calculate proportion of variance explained
+var_explained <- round(100 * pcoa$eig / sum(pcoa$eig), 2)
+
+# Create the plot
+pcoa_plot = ggplot() +
+  # Add light arrows for all families
+  geom_jitter(data = points_df, 
+             aes(x = PCoA1, y = PCoA2, color = beetle_status),
+             size = 0.5,
+             alpha = 0.6,
+             width = 0.01,
+             height = 0.01) +
+  # Add darker arrows for top 10 families
+  geom_segment(data = all_arrows_df,
+               aes(x = 0, y = 0, xend = PCoA1, yend = PCoA2),
+               arrow = arrow(length = unit(0.1, "cm")),
+               size = 0.3,
+               color = "gray60") +
+  geom_segment(data = arrows_df,
+               aes(x = 0, y = 0, xend = PCoA1, yend = PCoA2),
+               arrow = arrow(length = unit(0.1, "cm")),
+               size = 0.3,
+               color = "gray30") +
+  geom_text_repel(data = arrows_df,
+                  aes(x = PCoA1, y = PCoA2, label = Family),
+                  size = 1.8,
+                  force_pull = 10,
+                  force = 1,
+                  max.overlaps = Inf,
+                  box.padding = 0.001,
+                  point.padding = 0.01,
+                  segment.color = NA) +
+  scale_color_brewer(palette = "Set2") +
+  labs(x = paste0("PCoA1 (", var_explained[1], "%)"),
+       y = paste0("PCoA2 (", var_explained[2], "%)"),
+       color = "Beetle Status") +
+  coord_equal() +
+  theme_minimal() +
+  guides(fill = guide_legend(title.position = "top",
+    title.hjust = 0.5)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        text = element_text(size=8),
+               legend.position = "bottom",
+    legend.box = "horizontal",
+    legend.key.size = unit(0.4, "lines"),
+    legend.spacing.x = unit(0.1, "cm"),
+    legend.margin = margin(t = 0, r = 0, b = 0, l = 0, unit = "pt")
+        )
+
+pcoa_plot
+```
+
+Let's now combine this plot with the others:
+```{r}
+combined_nongeo <- patchwork::wrap_plots(
+  p_bars,
+  p_years + guides(fill='none'),
+  pcoa_plot + guides(fill='none') + coord_cartesian(),
+  ncol = 1,
+  heights = c(1,0.8,1)
+) +
+  plot_layout(guides = 'collect') +  # This collects and combines similar legends
+  plot_annotation(
+    theme = theme(
+      legend.position = 'bottom',  # Put all legends on the right
+    )
+  )
+
+combined_nongeo
+ggsave(combined_nongeo, filename = 'figures/fig1BCD.pdf',device = 'pdf',units = 'mm', height = 180, width=70, useDingbats=F)
+```
+
+
 
 
 # Plotting beetle phylogeny
