@@ -1,0 +1,2358 @@
+---
+title: "Plotting figures for Beetle flower visitor review"
+output:
+  html_notebook:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+---
+
+In this notebook, we will plot the results of our literature summaries made with Anthropic Sonnet 3.5 API, and also the beetle phylogeny highlighting beetle flower visitors and pollinators.
+
+Read packages.
+```{r}
+library(tidyverse)
+library(jsonlite)
+library(sf)
+library(rnaturalearth)
+library(ggthemes)
+library(patchwork)
+library(cowplot)
+library(reticulate)
+library(httr)
+library(jsonlite)
+library(treeio)
+library(deeptime)
+library(ape)
+library(ggtree)
+library(phytools)
+
+use_condaenv("ARE_review")
+rm(list=ls())
+```
+
+# Preprocessing and filtering data
+
+In this first part of the notebook, we will
+
+1. Read the json file with results from Sonnet 3.5 anaylses
+2. Reconcile geographical locations to those in [Natural Earth](https://www.naturalearthdata.com/) using the `rnaturalearth` package
+3. Reconcile plant species and higher taxon names to the classification of [World Flora Online](https://www.worldfloraonline.org/)
+
+
+## Parse JSON output
+Let's read the json output:
+```{r}
+review_data = fromJSON("analysis/flower_visitor_records.json")
+```
+
+Transforming into a data frame with some error handling:
+```{r}
+# Create a safe version of our processing function
+safe_process <- possibly(
+  function(bibtex_id) {
+    element <- review_data[[bibtex_id]]
+    
+    if (!is.null(element$json) && 
+        !is.null(element$json$has_primary_visitor_data) &&
+        isTRUE(element$json$has_primary_visitor_data) &&  # using isTRUE is safer
+        !is.null(element$json$records)) {
+      
+      element$json$records %>%
+        mutate(bibtex_id = bibtex_id)
+    }
+  },
+  otherwise = NULL  # Return NULL if anything goes wrong
+)
+
+# Apply the safe function
+combined_records <- names(review_data) %>%
+  map_dfr(safe_process)
+
+combined_records
+```
+## Reconcile geograpghy
+
+Country names are sometimes not standardized. Let's have a look at the distribution of country names in our dataset:
+```{r}
+combined_records$country %>% table %>% sort(decreasing = TRUE)
+```
+
+Let's now add ISO codes to standardize country names. Records that cannot be mapped to a single existing country will receive NA and be ignored from here on:
+
+```{r}
+country_codes <- tribble(
+  ~country, ~country_ISO_code,
+  "Costa Rica", "CRI",
+  "France", "FRA",
+  "Spain", "ESP",
+  "Australia", "AUS",
+  "USA", "USA",
+  "United States", "USA",
+  "United States of America", "USA",
+  "Peru", "PER",
+  "Ecuador", "ECU",
+  "Colombia", "COL",
+  "Ecuador and Peru", NA,
+  "Mexico", "MEX",
+  "México", "MEX",
+  "Brazil", "BRA",
+  "Thailand", "THA",
+  "Venezuela", "VEN",
+  "French Guiana", "FR-GF",
+  "Argentina", "ARG",
+  "Gabon", "GAB",
+  "Canada", "CAN",
+  "South Africa", "ZAF",
+  "Republic of South Africa", "ZAF",
+  "Sweden", "SWE",
+  "Malaysia", "MYS",
+  "Japan", "JPN",
+  "Pakistan", "PAK",
+  "Germany", "DEU",
+  "Puerto Rico", "PRI",
+  "Chile", "CHL",
+  "Madagascar", "MDG",
+  "China", "CHN",
+  "Denmark", "DNK",
+  "Benin", "BEN",
+  "Iran", "IRN",
+  "Morocco", "MAR",
+  "Jordan", "JOR",
+  "Czech Republic", "CZE",
+  "Belgium", "BEL",
+  "United Kingdom", "GBR",
+  "UK", "GBR",
+  "Great Britain", "GBR",
+  "England", "GBR",
+  "Scotland", "GBR",
+  "Ireland", "IRL",
+  "Saudi Arabia", "SAU",
+  "Panama", "PAN",
+  "Italy", "ITA",
+  "Poland", "POL",
+  "Finland", "FIN",
+  "Suriname", "SUR",
+  "India", "IND",
+  "Tanzania", "TZA",
+  "Trinidad and Tobago", "TTO",
+  "Trinidad", "TTO",
+  "Jamaica", "JAM",
+  "Israel", "ISR",
+  "Bolivia", "BOL",
+  "Turkey", "TUR",
+  "Türkiye", "TUR",
+  "Cameroon", "CMR",
+  "Ghana", "GHA",
+  "American Samoa", "ASM",
+  "Cuba", "CUB",
+  "Multiple European countries and USA", NA,
+  "Algeria", "DZA",
+  "Zimbabwe", "ZWE",
+  "El Salvador", "SLV",
+  "New Zealand", "NZL",
+  "Netherlands", "NLD",
+  "The Netherlands", "NLD",
+  "Mauritius", "MUS",
+  "Democratic Republic of the Congo", "COD",
+  "Democratic Republic of Congo", "COD",
+  "Namibia", "NAM",
+  "Greece", "GRC",
+  "none", NA,
+  "Botswana", "BWA",
+  "Uruguay", "URY",
+  "USA and Canada", NA,
+  "Korea", "KOR",
+  "South Korea", "KOR",
+  "Lithuania", "LTU",
+  "Taiwan", "TWN",
+  "Cambodia", "KHM",
+  "Hong Kong", NA,
+  "Portugal", "PRT",
+  "Indonesia", "IDN",
+  "Austria", "AUT",
+  "Comoros", "COM",
+  "Zambia", "ZMB",
+  "Samoa", "WSM",
+  "Western Samoa", "WSM",
+  "Switzerland", "CHE",
+  "Burkina Faso", "BFA",
+  "Cyprus", "CYP",
+  "Nepal", "NPL",
+  "Senegal", "SEN",
+  "Norway", "NOR",
+  "Papua New Guinea", "PNG",
+  "Nigeria", "NGA",
+  "Multiple European countries", NA,
+  "Russia", "RUS",
+  "New Caledonia", "NCL",
+  "Seychelles", "SYC",
+  "Cabo Verde", "CPV",
+  "Cape Verde", "CPV",
+  "Egypt", "EGY",
+  "Ukraine", "UKR",
+  "Singapore", "SGP",
+  "Guinea", "GIN",
+  "Nicaragua", "NIC",
+  "Brunei", "BRN",
+  "Brunei Darussalam", "BRN",
+  "Fiji", "FJI",
+  "Ethiopia", "ETH",
+  "French Polynesia", "PYF",
+  "Ivory Coast", "CIV",
+  "Spain and Portugal", NA,
+  "Vietnam", "VNM",
+  "Vanuatu", "VUT",
+  "Malawi", "MWI",
+  "Lesotho", "LSO",
+  "Kenya", "KEN",
+  "Laos", "LAO",
+  "Canada and USA", NA,
+  "Bulgaria", "BGR",
+  "The Gambia", "GMB",
+  "Dominica", "DMA",
+  "Guatemala", "GTM",
+  "Montenegro", "MNE",
+  "Serbia", "SRB",
+  "Dominican Republic", "DOM",
+  "Reunion Island", "FR-RE",
+  "Reunion", "FR-RE",
+  "Réunion", "FR-RE",
+  "Hungary", "HUN",
+  "Bangladesh", "BGD",
+  "Lebanon", "LBN",
+  "Philippines", "PHL",
+  "Estonia", "EST",
+  "Croatia", "HRV",
+  "Andorra", "AND",
+  "Paraguay", "PRY",
+  "Uganda", "UGA",
+  "Saint Helena", "SHN",
+  "Mayotte", "FR-YT",
+  "Bahamas", "BHS",
+  "Sri Lanka", "LKA",
+  "Guyana", "GUY",
+  "Georgia", "GEO",
+  "Crimea", NA,
+  "Bosnia and Herzegovina", "BIH",
+  "United States and Mexico", NA,
+  "French Southern and Antarctic Lands", "ATF",
+  "Uzbekistan", "UZB"
+)
+
+combined_records = combined_records %>% left_join(country_codes)
+
+combined_records
+```
+Now let's combine this with data. For countries with small latitudinal range, we will combine data by country. For countries with large latitudinal range, we will do it by states. Let's get country-level data first:
+```{r}
+# Get world map data from rnatural eath
+world_sf <- ne_countries(scale = "medium", returnclass = "sf")
+```
+
+let's now sort countries by latitudinal range.
+```{r}
+country_lat_range = world_sf %>% mutate(
+    min_lat = map_dbl(geometry, ~ st_bbox(.x)[["ymin"]]),
+    max_lat = map_dbl(geometry, ~ st_bbox(.x)[["ymax"]]),
+    lat_range = max_lat - min_lat
+  ) %>%
+  select(name, adm0_a3, min_lat, max_lat, lat_range) %>%
+  arrange(desc(lat_range)) %>%
+  as_tibble()
+
+country_lat_range
+```
+
+Let's split records by state for all countries with more than 20 degrees of latitudinal range. Let's find the states for these countries. First, let's figure out which states from our literature database don't map to states in natural earth data:
+
+```{r}
+higher_lat_range_codes = country_lat_range %>% filter(lat_range > 20) %>% pull(adm0_a3)
+
+existing_states = ne_states() %>%
+  filter(adm0_a3 %in% higher_lat_range_codes) %>%
+  as_tibble() %>%
+  select(state_name = name,country_name = admin, country_ISO_code=adm0_a3, state_ISO_code = iso_3166_2)
+  
+combined_records %>% filter(country_ISO_code %in% higher_lat_range_codes) %>%
+  select(country,state_name = state_province,country_ISO_code) %>%
+  distinct() %>%
+  left_join(existing_states,by = c('state_name','country_ISO_code')) %>%
+  filter(is.na(country_name)) %>%
+  select(-country_name)
+```
+
+We will now use Claude to map these states to names that exist in the natural earth database. Let's save a table to use as project knowledge.
+
+```{r}
+existing_states %>% write_csv("~/Downloads/ne_states.csv")
+```
+
+This is the mapping that Claude generated, with some manual corrections:
+```{r}
+# Create mapping table for state names to ISO codes
+state_iso_mapping <- data.frame(
+  original_state_name = c(
+    "Occitanie", "Southern Cape", "Ibaraki Prefecture", "Tokyo Prefecture", "V Region",
+    "Cordillera Province", "Saint-Philippe", "Brittany", "Valparaíso Region", "Juan Fernández Islands",
+    "Santiago Metropolitan Region", "Metropolitan Region", "North West Province", "Languedoc-Roussillon", "Quebec",
+    "Shandong Province", "Yunnan Province", "Eastern Cape Province", "Region of Coquimbo", "Valdivia",
+    "Multiple states", "Idaho, Nevada, Utah", "California, Idaho, Nevada, Oregon, Utah", "Hokkaido", "Goias",
+    "Midi-Pyrénées", "Inner Mongolia", "Rio Negro", "Gansu Province", "Guangxi Province",
+    "Jiangxi Province", "Eastern Cape and KwaZulu-Natal", "Los Rios", "Los Ríos Region", "Goiás State",
+    "North Island", "Northern Cape Province", "Minais Gerais", "Pyrenees", "Rio Negro and Neuquen",
+    "Federal District", "Shizuoka Prefecture", "Kyoto Prefecture", "Kyoto", "Maule Region",
+    "Northern Cape/Western Cape", "Hyogo", "Altai Republic", "Krasnodar Territory", "Cordoba",
+    "Salta/Jujuy", "Fukuoka Prefecture", "Kochi Prefecture", "Hyogo Prefecture", "São Paulo/Rio de Janeiro border",
+    "Henan Province", "Liaoning Province", "Entre Rios", "Central Chile", "Kerala and Tamil Nadu",
+    "Western Australia and Northern Territory", "Tibet", "Hong Kong", "Jiangsu Province", "Honshu",
+    "Nagano Prefecture", "KwaZulu Natal", "Para", "Yamanashi Prefecture", "Maharashtra and Goa",
+    "Piaui", "Fujian Province", "Hubei Province", "Shannxi Province", "Valparaiso",
+    "Qinghai Province", "Rhône-Alpes", "Mie Prefecture", "Kagoshima Prefecture", "Nara Prefecture",
+    "Miyagi Prefecture", "Miyagi Prefecture and Yamagata Prefecture", "Region Metropolitana", "Biobío", "Aomori Prefecture",
+    "North-West Province", "Natal", "Sichuan Province", "Western Cape Province", "Cape Province", 
+    "Wakayama Prefecture", "Taiwan", "Ishikawa Prefecture", "Okinawa Prefecture", "Amami Islands",
+    "Ryukyu Islands", "Yakushima", "Toyama Prefecture", "South Holland", "Kyushu",
+    "Tarapacá Region", "Crimean Peninsula", "Limpopo Province", "Okayama Prefecture", "Kerala and Karnataka",
+    "Burgundy", "Nouvelle-Aquitaine", "Réunion", "South Holland", "Heilongjiang Province",
+    "Guangdong Province", "Moscow Oblast", "Tochigi Prefecture", "Xinjiang Uyghur Autonomous Region", "Guam",
+    "Shiga Prefecture", "IV Región", "Gifu Prefecture", "Hyogo, Okayama, and Tottori Prefectures", "Multiple prefectures",
+    "Tucuman", "Kagawa Prefecture", "Colchagua", "Talca", "South Island",
+    "Ryukyu Archipelago", "Miyazaki Prefecture", "Qinghai-Tibet", "Shimane Prefecture", "Primorsky Krai", 
+    "Western Cape and Eastern Cape", "Bonin Islands", "Hokkaido Prefecture", "Kinki", "Osaka Prefecture",
+    "Akita Prefecture", "Rio de Janeiro/Minas Gerais", "Orissa", "Auckland Region", "Île-de-France",
+    "Washington and Oregon", "Multiple including Gauteng and KwaZulu-Natal", "Banks Peninsula", "Guangxi Zhuang Autonomous Region", "Corsica",
+    "Region of Maule", "Victoria and New South Wales", "Nelson", "Chiloé", "VIII Region",
+    "Washington and Idaho", "Idaho and Washington", "Oita Prefecture", "Oregon/Washington/Idaho", "Western Ghats",
+    "Hiroshima Prefecture", "Sikkim and Darjeeling", "Maule and Los Ríos Regions", "Altai Krai", "Provence",
+    "Provence-Alpes-Côte d'Azur", "Chiba Prefecture", "Osaka", "Kumamoto Prefecture", "Nagasaki Prefecture",
+    "Ogasawara Islands", "Tottori Prefecture", "Yamaguchi Prefecture", "Ryukyu archipelago", "Saga Prefecture",
+    "Aichi Prefecture", "Shikoku", "Shanxi Province", "Hunan Province", "Región Metropolitana",
+    "Santiago", "Shaanxi Province", "Hyogo, Osaka, Nara", "Moscow oblast", "Tula oblast",
+    "Región de Los Lagos", "Espirito Santo", "Region V", "Region La Araucania", "Valparaiso Region",
+    "multiple states", "Jammu", "Region of Bernardo O'Higgins", "Inner Mongolia Autonomous Region", "Languedoc",
+    "Zhejiang Province", "Xisha Islands", "Alabama, Georgia, South Carolina, North Carolina", "Honshu and Izu Islands", "Tokushima Prefecture",
+    "Xinjiang Uygur Autonomous Region", "California/Oregon border", "Mpumulanga"
+  ),
+  state_ISO_code = c(
+    "FRA", NA, "JP-08", "JP-13", NA,  # 1-5
+    NA, "FR-RE", "FRA", NA, NA,      # 6-10
+    "CL-RM", "CL-RM", "ZA-NW", NA, "CA-QC",  # 11-15
+    "CN-SD", "CN-YN", "ZA-EC", "CL-CO", NA,  # 16-20
+    NA, NA, NA, "JP-01", "BR-GO",        # 21-25
+    NA, "CN-NM", "AR-R", "CN-GS", "CN-GX",  # 26-30
+    "CN-JX", NA, "CL-LR", "CL-LR", "BR-GO",  # 31-35
+    NA, "ZA-NC", "BR-MG", NA, NA,        # 36-40
+    "BR-DF", "JP-22", "JP-26", "JP-26", "CL-ML",  # 41-45
+    NA, "JP-28", "RU-AL", "RU-KDA", "AR-X",  # 46-50
+    NA, "JP-40", "JP-39", "JP-28", NA,   # 51-55
+    "CN-HA", "CN-LN", "AR-E", NA, NA,    # 56-60
+    NA, "CN-XZ", "CN-GD", "CN-SC", NA,   # 61-65
+    "JP-20", "ZA-NL", "BR-PA", "JP-19", NA,  # 66-70
+    "BR-PI", "CN-FJ", "CN-HB", NA, "CL-VS",  # 71-75
+    "CN-QH", NA, "JP-24", "JP-46", "JP-29",  # 76-80
+    "JP-04", NA, "CL-RM", "CL-BI", "JP-02",  # 81-85
+    "ZA-NW", NA, "CN-SC", "ZA-WC", NA,   # 86-90
+    "JP-30", "TWN", "JP-17", "JP-47", NA,  # 91-95
+    NA, NA, "JP-16", "NL-ZH", NA,        # 96-100
+    "CL-TA", NA, "ZA-LP", "JP-33", NA,   # 101-105
+    "FRA", "FRA", "FR-RE", "NL-ZH", "CN-HL",  # 106-110
+    "CN-GD", "RU-MOS", "JP-09", "CN-XJ", "GU-X01~",  # 111-115
+    "JP-25", NA, "JP-21", NA, NA,        # 116-120
+    "AR-T", "JP-37", NA, NA, NA,         # 121-125
+    NA, "JP-45", NA, "JP-32", "RU-PRI",  # 126-130
+    NA, NA, "JP-01", NA, "JP-27",        # 131-135
+    "JP-05", NA, "IN-OR", "NZ-X06~", "FRA",  # 136-140
+    NA, NA, NA, "CN-GX", "FRA",       # 141-145
+    "CL-ML", NA, "NZ-NSN", NA, NA,       # 146-150
+    NA, NA, "JP-44", NA, NA,             # 151-155
+    "JP-34", NA, NA, "RU-ALT", NA,       # 156-160
+    "FRA", "JP-12", "JP-27", "JP-43", "JP-42",  # 161-165
+    NA, "JP-31", "JP-35", NA, "JP-41",   # 166-170
+    "JP-23", NA, "CN-SX", "CN-HN", "CL-RM",  # 171-175
+    "CL-RM", "CN-SN", NA, "RU-MOS", "RU-TUL",  # 176-180
+    "CL-LL", "BR-ES", NA, "CL-AR", "CL-VS",  # 181-185
+    NA, "IN-JK", "CL-LI", "CN-NM", NA,   # 186-190
+    "CN-ZJ", NA, NA, NA, "JP-36",        # 191-195
+    "CN-XJ", NA, "ZA-MP"                 # 196-198
+  )
+)
+
+state_iso_mapping = state_iso_mapping %>% filter(!is.na(state_ISO_code))
+```
+
+
+After this first step, I asked claude to incorporate locality information and see if we can map a few more:
+```{r}
+additional_state_mapping = data.frame(
+  original_state_name = c(
+    "Southern Cape", # Localities: Vasselot Nature Reserve, Kranshoek, Harkerville, Midway
+    "V Region",      # Multiple localities all in Valparaíso Region
+    "Cordillera Province", # El Volcán, Farellones, Termas Colina
+    "Valparaíso Region", # Includes Juan Fernández Islands localities
+    "Juan Fernández Islands", # Part of Valparaíso Region
+    "Languedoc-Roussillon", # Multiple localities but historical region
+    "Valdivia",    # Specific locality: Botanical Garden of Universidad Austral
+    "Multiple states", # Various multi-state localities
+    "Idaho, Nevada, Utah", # Sagebrush steppe across multiple states
+    "California, Idaho, Nevada, Oregon, Utah", # Multiple states
+    "Midi-Pyrénées", # Localities: Bagnères-de-Bigorre, Uzer
+    "North Island", # Several specific localities
+    "Pyrenees",    # Locality: Camurac
+    "Rio Negro and Neuquen", # Nahuel Huapi and Lanín National Parks
+    "Northern Cape/Western Cape", # Namaqualand region
+    "Salta/Jujuy", # Río and Mango populations
+    "São Paulo/Rio de Janeiro border",
+    "Central Chile", # Multiple sites spanning regions
+    "Kerala and Tamil Nadu",
+    "Western Australia and Northern Territory",
+    "Honshu",      # Mt. Izumigatake localities
+    "Maharashtra and Goa",
+    "Shannxi Province",
+    "Rhône-Alpes", # Col du Lautaret locality
+    "Miyagi Prefecture and Yamagata Prefecture",
+    "Natal",       # Himeville Nature Reserve
+    "Cape Province", # Multiple historical locations
+    "Amami Islands",
+    "Ryukyu Islands",
+    "Yakushima", 
+    "Kyushu",      # Kamae area/region
+    "Crimean Peninsula",
+    "Kerala and Karnataka",
+    "IV Región",   # Multiple localities 
+    "Hyogo, Okayama, and Tottori Prefectures",
+    "Multiple prefectures",
+    "Colchagua",   # Near Las Peñas
+    "Talca",       # Natural Preserve Altos de Lircay
+    "South Island", # Multiple specific locations
+    "Ryukyu Archipelago", # Multiple islands
+    "Qinghai-Tibet", # Alpine Meadow Ecosystem Research Station
+    "Western Cape and Eastern Cape", # 11 populations across regions
+    "Bonin Islands",
+    "Kinki",       # Mt. Hyonosen area
+    "Rio de Janeiro/Minas Gerais", # Itatiaia National Park
+    "Eastern Cape and KwaZulu-Natal", # East coast sites
+    "Washington and Oregon", # Columbia River Gorge
+    "Multiple including Gauteng and KwaZulu-Natal",
+    "Banks Peninsula", # Prices Valley
+    "Victoria and New South Wales",
+    "Chiloé",      # Multiple specific localities in northern Chiloé
+    "VIII Region", # Cobquecura
+    "Washington and Idaho",
+    "Idaho and Washington", # Same area different naming
+    "Oregon/Washington/Idaho", # Sagebrush-bunchgrass steppe
+    "Western Ghats",
+    "Sikkim and Darjeeling", # Multiple tea plantations
+    "Maule and Los Ríos Regions",
+    "Provence",    # Specific localities: Bagaud Island, Brégançon
+    "Ogasawara Islands", # Anijima Island
+    "Ryukyu archipelago", # Multiple islands
+    "Multiple prefectures", # Akao site and Uruno site
+    "Hyogo, Osaka, Nara", # Osaka-Kobe metropolitan area
+    "Region V",    # Multiple localities all in Valparaíso
+    "multiple states", # 24 populations across states
+    "Languedoc",   # St. Bauzille, La Clause, Hortus Mountain
+    "Xisha Islands", # Yongxing Island
+    "Alabama, Georgia, South Carolina, North Carolina",
+    "Cape Province", # Multiple historical sites
+    "California/Oregon border", # Intermontane valleys
+    "multiple states" # Great Basin and Columbia Plateau
+  ),
+  state_ISO_code = c(
+    NA,            # Historical Cape Province region
+    "CL-VS",       # All localities in Valparaíso Region
+    "CL-RM",       # Part of Santiago Metropolitan Region
+    "CL-VS",       # Valparaíso Region including islands
+    "CL-VS",       # Part of Valparaíso Region
+    NA,            # Historical region
+    "CL-LR",       # Los Ríos Region
+    NA,            # Multiple states
+    NA,            # Multiple states
+    NA,            # Multiple states
+    NA,            # Historical region
+    "NZ-NTL",      # North Island
+    NA,            # Mountain range across regions
+    NA,            # Two provinces
+    NA,            # Two provinces
+    NA,            # Two provinces
+    NA,            # Border region
+    NA,            # Multiple regions
+    NA,            # Two states
+    NA,            # Two territories
+    NA,            # Region rather than prefecture
+    NA,            # Two states
+    "CN-SN",       # Shaanxi Province
+    NA,            # Historical region
+    NA,            # Two prefectures
+    "ZA-NL",       # Now part of KwaZulu-Natal
+    NA,            # Historical province
+    NA,            # Island group
+    NA,            # Island group
+    NA,            # Island
+    NA,            # Region rather than prefecture
+    NA,            # Disputed territory
+    NA,            # Two states
+    "CL-CO",       # Coquimbo Region
+    NA,            # Multiple prefectures
+    NA,            # Multiple prefectures
+    "CL-LI",       # O'Higgins Region
+    "CL-ML",       # Maule Region
+    "NZ-STL",      # South Island
+    NA,            # Multiple islands
+    NA,            # Cross-border region
+    NA,            # Two provinces
+    NA,            # Island group
+    NA,            # Region rather than prefecture
+    NA,            # Two states
+    NA,            # Two provinces
+    NA,            # Two states
+    NA,            # Multiple provinces
+    "NZ-CAN",      # Canterbury Region
+    NA,            # Two states
+    "CL-LL",       # Los Lagos Region
+    "CL-BI",       # Biobío Region
+    NA,            # Two states
+    NA,            # Two states
+    NA,            # Three states
+    NA,            # Geographic region
+    NA,            # Cross-border region
+    NA,            # Two regions
+    "FRA",      # Now part of Provence-Alpes-Côte d'Azur
+    NA,            # Island group
+    NA,            # Island group
+    NA,            # Multiple prefectures
+    NA,            # Multiple prefectures
+    "CL-VS",       # Valparaíso Region
+    NA,            # Multiple states
+    NA,            # Historical region
+    NA,            # Island group
+    NA,            # Multiple states
+    NA,            # Historical province
+    NA,            # Border region
+    NA             # Multiple states
+  )
+) %>%
+  filter(!is.na(state_ISO_code))
+
+```
+
+The only hiccup left is that Hong Kong does not show up either in the countries or states map. Since we are interested in global patterns, I just joined the results with the closes Chinese province (Guandong) for visualization purposes.
+
+Now let's combine both:
+```{r}
+state_iso_mapping = rbind(state_iso_mapping %>% select(state_province = original_state_name, state_ISO_code),
+                          additional_state_mapping %>% select(state_province = original_state_name, state_ISO_code),
+                          existing_states %>% select(state_province = state_name, state_ISO_code)) %>%
+  distinct()
+state_iso_mapping
+```
+
+Now let's add a column to combined data that will tell us which code we will use to map:
+```{r}
+filtered_state_level_records = combined_records %>% 
+  left_join(state_iso_mapping, by = "state_province") %>%
+  filter(!is.na(country_ISO_code), !((country_ISO_code %in% higher_lat_range_codes) & is.na(state_ISO_code))) %>%
+  mutate(grouping_iso_code = ifelse(is.na(state_ISO_code),country_ISO_code,state_ISO_code))
+
+filtered_state_level_records <- filtered_state_level_records %>%
+  mutate(
+    grouping_iso_code = case_when(
+      # Check if the code starts with "FR-" but is not one of the overseas territories
+      startsWith(grouping_iso_code, "FR-") & 
+      !grouping_iso_code %in% c("FR-GF", "FR-MQ", "FR-GP", "FR-RE", "FR-YT") ~ "FRA",
+      # Keep all other codes unchanged
+      TRUE ~ grouping_iso_code
+    )
+  )
+
+filtered_state_level_records
+```
+
+## Reconcile plant names
+
+Let's now filter even further and delete records for which we cannot parse plant names. We will get plant names from the World Flora Online API first:
+
+Accessory functions
+```{r}
+# Clean name function - removes HTML tags and formats the name correctly
+clean_name <- function(name) {
+  if (is.null(name) || length(name) == 0 || is.na(name)) return(NA)
+  
+  # Extract name and author parts
+  name_part <- sub('.*<span class="wfo-name">(.*?)</span>.*', '\\1', name)
+  author_part <- sub('.*<span class="wfo-name-authors"[^>]*>(.*?)</span>.*', '\\1', name)
+  author_part <- if (author_part == name) "" else author_part
+  
+  # Clean up HTML tags
+  name_part <- gsub("<i>([^<]+)</i>", "\\1", name_part)
+  name_part <- gsub('<span class="wfo-name-rank">([^<]+)</span>', "\\1", name_part)
+  name_part <- gsub("<[^>]+>", "", name_part)
+  name_part <- gsub("\\s+", " ", name_part)
+  name_part <- trimws(name_part)
+  
+  author_part <- gsub("<[^>]+>", "", author_part)
+  author_part <- gsub("\\s+", " ", author_part)
+  author_part <- trimws(author_part)
+  
+  if (nchar(author_part) > 0) {
+    paste(name_part, author_part)
+  } else {
+    name_part
+  }
+}
+
+# Extract family name from path string
+extract_family_from_path <- function(path_string) {
+  if (is.null(path_string) || is.na(path_string)) return(NA)
+  
+  parts <- strsplit(path_string, "/")[[1]]
+  family_names <- parts[grep("aceae$", parts)]
+  if (length(family_names) > 0) {
+    return(family_names[1])
+  }
+  return(NA)
+}
+
+# Extract family information from name data
+extract_family <- function(name_data) {
+  # Handle cases with NA currentPreferredUsage first
+  if (is.data.frame(name_data) && "currentPreferredUsage" %in% names(name_data) && 
+      all(is.na(name_data$currentPreferredUsage))) {
+    return(list(name = NA, id = NA))
+  }
+  
+  # Handle unplaced names
+  if (!is.null(name_data$role) && name_data$role == "unplaced") {
+    if (!is.null(name_data$hasAssociatedGenusName)) {
+      # For data frame structure
+      if (is.data.frame(name_data$hasAssociatedGenusName)) {
+        path_string <- name_data$hasAssociatedGenusName$currentPreferredUsage$pathString[1]
+        if (!is.null(path_string) && !is.na(path_string)) {
+          family_name <- extract_family_from_path(path_string)
+          if (!is.na(family_name)) {
+            return(list(name = family_name, id = NA))
+          }
+        }
+      } 
+      # For list structure
+      else if (is.list(name_data$hasAssociatedGenusName)) {
+        if (!is.null(name_data$hasAssociatedGenusName$currentPreferredUsage$pathString)) {
+          family_name <- extract_family_from_path(name_data$hasAssociatedGenusName$currentPreferredUsage$pathString)
+          if (!is.na(family_name)) {
+            return(list(name = family_name, id = NA))
+          }
+        }
+      }
+    }
+    return(list(name = NA, id = NA))
+  }
+  
+  # Handle placed names
+  if (!is.null(name_data$currentPreferredUsage)) {
+    # Try path string first
+    if (!is.null(name_data$currentPreferredUsage$pathString)) {
+      family_name <- extract_family_from_path(name_data$currentPreferredUsage$pathString)
+      if (!is.na(family_name)) {
+        # Try to find family ID by traversing up the hierarchy
+        current <- name_data$currentPreferredUsage$isPartOf
+        while (!is.null(current)) {
+          if (!is.null(current$hasName)) {
+            name_html <- current$hasName$fullNameStringHtml
+            name <- sub('.*<span class="wfo-name">([^<]+)</span>.*', '\\1', name_html)
+            name <- trimws(name)
+            
+            if (grepl("aceae$", name)) {
+              return(list(name = name, id = current$hasName$id))
+            }
+          }
+          current <- current$isPartOf
+        }
+        return(list(name = family_name, id = NA))
+      }
+    }
+  }
+  
+  return(list(name = NA, id = NA))
+}
+
+# Make API request with retry logic
+make_api_request <- function(query, retries_left = 3, retry_delay = 2) {
+  tryCatch({
+    response <- POST(
+      url = "https://list.worldfloraonline.org/gql.php",
+      body = list(query = query),
+      encode = "json",
+      add_headers(
+        "Content-Type" = "application/json",
+        "Accept" = "application/json"
+      ),
+      timeout(20)
+    )
+    
+    if (http_error(response)) {
+      stop(sprintf("HTTP error: %s", http_status(response)$message))
+    }
+    
+    # Check for GraphQL errors in response
+    content <- fromJSON(rawToChar(response$content))
+    if (!is.null(content$errors)) {
+      stop(sprintf("GraphQL errors: %s", 
+                  paste(sapply(content$errors, function(e) e$message), collapse="; ")))
+    }
+    
+    return(response)
+    
+  }, error = function(e) {
+    if (retries_left > 0) {
+      warning(sprintf("Request failed, retrying in %d seconds. Retries left: %d. Error: %s", 
+                     retry_delay, retries_left, e$message))
+      Sys.sleep(retry_delay)
+      return(make_api_request(query, retries_left - 1))
+    } else {
+      stop(sprintf("All retries exhausted. Last error: %s", e$message))
+    }
+  })
+}
+
+# Complete family IDs for results
+complete_family_ids <- function(df) {
+  # First pass: use known family IDs
+  known_families <- df[!is.na(df$family_id), c("family", "family_id")]
+  family_id_map <- unique(known_families)
+  
+  for (i in 1:nrow(df)) {
+    if (is.na(df$family_id[i]) && !is.na(df$family[i])) {
+      matching_row <- family_id_map[family_id_map$family == df$family[i], ]
+      if (nrow(matching_row) > 0) {
+        df$family_id[i] <- matching_row$family_id[1]
+      }
+    }
+  }
+  
+  # Second pass: lookup remaining families
+  remaining_families <- unique(df$family[is.na(df$family_id) & !is.na(df$family)])
+  
+  if (length(remaining_families) > 0) {
+    queries <- sapply(seq_along(remaining_families), function(i) {
+      sprintf('
+        f%d: taxonNameSuggestion(termsString: "%s", limit: 1) {
+          id
+          fullNameStringHtml
+          role
+        }
+      ', i, remaining_families[i])
+    })
+    
+    query <- sprintf('{ %s }', paste(queries, collapse = "\n"))
+    response <- make_api_request(query)
+    response_data <- fromJSON(rawToChar(response$content))
+    
+    for (i in seq_along(remaining_families)) {
+      family_name <- remaining_families[i]
+      result <- response_data$data[[paste0("f", i)]]
+      if (length(result) > 0) {
+        df$family_id[df$family == family_name & is.na(df$family_id)] <- result$id[1]
+      }
+    }
+  }
+  
+  return(df)
+}
+
+# Create batch query for name matching
+create_match_query <- function(batch_names) {
+  queries <- sapply(seq_along(batch_names), function(i) {
+    sprintf('
+      n%d: taxonNameMatch(
+        inputString: "%s"
+        fuzzyNameParts: 3
+        fuzzyAuthors: 3
+        checkHomonyms: true
+      ) {
+        match {
+          id
+          fullNameStringHtml
+          role
+          currentPreferredUsage {
+            id
+            pathString
+            hasName {
+              id
+              fullNameStringHtml
+            }
+            isPartOf {
+              hasName {
+                id
+                fullNameStringHtml
+              }
+              isPartOf {
+                hasName {
+                  id
+                  fullNameStringHtml
+                }
+              }
+            }
+          }
+          hasAssociatedGenusName {
+            id
+            fullNameStringHtml
+            currentPreferredUsage {
+              pathString
+              hasName {
+                id 
+                fullNameStringHtml
+              }
+            }
+          }
+        }
+        candidates {
+          id
+          fullNameStringHtml
+          role
+          currentPreferredUsage {
+            id
+            pathString
+            hasName {
+              id
+              fullNameStringHtml
+            }
+            isPartOf {
+              hasName {
+                id
+                fullNameStringHtml
+              }
+              isPartOf {
+                hasName {
+                  id
+                  fullNameStringHtml
+                }
+              }
+            }
+          }
+        }
+      }
+    ', i, gsub('"', '\\\\"', batch_names[i]))  # Escape quotes in plant names
+  })
+  
+  sprintf('{ %s }', paste(queries, collapse = "\n"))
+}
+```
+
+
+Main code to query WFO:
+```{r}
+# Main function for checking plant names against WFO database
+check_plant_names <- function(plant_names, batch_size = 10, max_retries = 3, retry_delay = 2) {
+  # Required packages
+  if (!require("httr")) install.packages("httr")
+  if (!require("jsonlite")) install.packages("jsonlite")
+  library(httr)
+  library(jsonlite)
+  
+  # Split names into batches
+  batches <- split(plant_names, ceiling(seq_along(plant_names) / batch_size))
+  
+  # Process batches and combine results
+  all_results <- list()
+  
+  for (batch_num in seq_along(batches)) {
+    current_batch <- batches[[batch_num]]
+    message(sprintf("Processing batch %d of %d...", batch_num, length(batches)))
+    
+    # Try to process the batch
+    batch_results <- tryCatch({
+      # Create and execute query
+      query <- create_match_query(current_batch)
+      response <- make_api_request(query, max_retries, retry_delay)
+      response_data <- fromJSON(rawToChar(response$content))
+      
+      # Process each name in the batch
+      lapply(names(response_data$data), function(node_name) {
+        match_data <- response_data$data[[node_name]]
+        original_query <- current_batch[as.numeric(sub("n", "", node_name))]
+        process_name_result(match_data, original_query)
+      })
+    }, error = function(e) {
+      message(sprintf("Batch failed, processing names individually..."))
+      
+      # Process each name individually
+      lapply(seq_along(current_batch), function(i) {
+        name <- current_batch[i]
+        tryCatch({
+          query <- create_match_query(name)
+          response <- make_api_request(query, max_retries, retry_delay)
+          response_data <- fromJSON(rawToChar(response$content))
+          match_data <- response_data$data$n1
+          process_name_result(match_data, name)
+        }, error = function(e) {
+          # On error, return NA for all fields
+          list(
+            original_query = name,
+            wfo_id = NA,
+            is_synonym = NA,
+            original_name = NA,
+            accepted_name = NA,
+            accepted_id = NA,
+            family = NA,
+            family_id = NA
+          )
+        })
+      })
+    })
+    
+    all_results <- c(all_results, batch_results)
+  }
+  
+  # Convert results to data frame
+  result_df <- do.call(rbind, lapply(all_results, function(x) {
+    data.frame(
+      original_query = x$original_query,
+      wfo_id = x$wfo_id,
+      is_synonym = x$is_synonym,
+      original_name = x$original_name,
+      accepted_name = x$accepted_name,
+      accepted_id = x$accepted_id,
+      family = x$family,
+      family_id = x$family_id,
+      stringsAsFactors = FALSE
+    )
+  }))
+  
+  # Complete missing family IDs
+  result_df <- complete_family_ids(result_df)
+  
+  # Post-processing: propagate family information within genera
+  # Extract genus from original_name (first word)
+  result_df$genus <- sapply(strsplit(result_df$original_name, " "), function(x) if(length(x) > 0) x[1] else NA)
+  
+  # Create a genus-to-family mapping from known entries
+  genus_family_map <- result_df[!is.na(result_df$family) & !is.na(result_df$genus), 
+                               c("genus", "family", "family_id")] %>%
+    unique()
+  
+  # Update missing family information based on genus
+  for(i in 1:nrow(result_df)) {
+    if(is.na(result_df$family[i]) && !is.na(result_df$genus[i])) {
+      matching_row <- genus_family_map[genus_family_map$genus == result_df$genus[i], ]
+      if(nrow(matching_row) > 0) {
+        result_df$family[i] <- matching_row$family[1]
+        result_df$family_id[i] <- matching_row$family_id[1]
+      }
+    }
+  }
+  
+  # Remove the temporary genus column
+  result_df$genus <- NULL
+  
+  return(result_df)
+}
+
+# Helper function to process a single name result
+process_name_result <- function(match_data, original_query) {
+  # Get the best match - either exact match or first candidate
+  name_data <- if (!is.null(match_data$match)) {
+    match_data$match
+  } else if (is.data.frame(match_data$candidates) && nrow(match_data$candidates) > 0) {
+    # For data frame candidates, handle NA currentPreferredUsage
+    candidates <- match_data$candidates
+    if (all(is.na(candidates$currentPreferredUsage))) {
+      # Take first unplaced candidate
+      candidates[1,]
+    } else {
+      # Prefer accepted names that have currentPreferredUsage
+      valid_idx <- !is.na(candidates$currentPreferredUsage)
+      if (any(valid_idx)) {
+        valid_candidates <- candidates[valid_idx,]
+        accepted_idx <- which(valid_candidates$role == "accepted")
+        if (length(accepted_idx) > 0) {
+          valid_candidates[accepted_idx[1],]
+        } else {
+          valid_candidates[1,]
+        }
+      } else {
+        candidates[1,]
+      }
+    }
+  } else {
+    return(list(
+      original_query = original_query,
+      wfo_id = NA,
+      is_synonym = NA,
+      original_name = NA,
+      accepted_name = NA,
+      accepted_id = NA,
+      family = NA,
+      family_id = NA
+    ))
+  }
+  
+  # Extract family information
+  family_info <- extract_family(name_data)
+  
+  # Handle unplaced names, NULL or NA currentPreferredUsage
+  if (is.null(name_data$currentPreferredUsage) || 
+      (is.atomic(name_data$currentPreferredUsage) && is.na(name_data$currentPreferredUsage)) ||
+      (is.data.frame(name_data$currentPreferredUsage) && nrow(name_data$currentPreferredUsage) == 0) ||
+      (is.logical(name_data$currentPreferredUsage) && all(is.na(name_data$currentPreferredUsage)))) {
+    return(list(
+      original_query = original_query,
+      wfo_id = name_data$id,
+      is_synonym = NA,
+      original_name = clean_name(name_data$fullNameStringHtml),
+      accepted_name = "Unplaced name",
+      accepted_id = NA,
+      family = family_info$name,
+      family_id = family_info$id
+    ))
+  }
+  
+  # Determine if name is a synonym - but first check if hasName exists
+  if (!is.null(name_data$currentPreferredUsage$hasName)) {
+    is_synonym <- name_data$id != name_data$currentPreferredUsage$hasName$id
+  } else {
+    is_synonym <- NA
+  }
+  
+  # Return processed result
+  list(
+    original_query = original_query,
+    wfo_id = name_data$id,
+    is_synonym = is_synonym,
+    original_name = clean_name(name_data$fullNameStringHtml),
+    accepted_name = clean_name(name_data$currentPreferredUsage$hasName$fullNameStringHtml),
+    accepted_id = name_data$currentPreferredUsage$hasName$id,
+    family = family_info$name,
+    family_id = family_info$id
+  )
+}
+```
+
+Now we can apply this function. We will save the result when re-running this notebook to avoid unnecessary API calls.
+```{r}
+
+#plant_names = check_plant_names((filtered_state_level_records$plant_species %>% unique()))
+#save(plant_names,file = "tables/WFO_results.Rdata")
+load("tables/WFO_results.Rdata")
+plant_names
+```
+
+Were there records that could not be retrieved?
+```{r}
+plant_names %>%
+  filter(is.na(family))
+```
+
+Great, there are only a few cases, and the majority should be removed anyway since they are not single plant species.
+
+```{r}
+processed_plant_names = plant_names %>%
+  filter(!is.na(family)) %>%
+  select(plant_species = original_query,
+         plant_species_original_wfo_id = wfo_id,
+         plant_species_is_synonym = is_synonym,
+         plant_speices_original_match = original_name,
+         plant_species_current_name = accepted_name,
+         plant_species_current_wfo_id = accepted_id,
+         plant_family_name = family,
+         plant_family_wfo_id = family_id
+         )
+
+filtered_state_level_records = filtered_state_level_records %>%
+  left_join(processed_plant_names, by = 'plant_species') %>%
+  filter(!is.na(family))
+
+filtered_state_level_records
+```
+# Make plots
+
+Now we will use this filtered dataset to make plots showing the global distribution of beetle flower visitors and pollinators, as well as the effect of sampling method and time.
+
+## Plot maps
+
+Now let's summarize records for each geographical group:
+```{r}
+iso_level_summaries = filtered_state_level_records %>%
+  group_by(grouping_iso_code) %>%
+  summarise(n_records=n(), beetle_fraction=mean(beetle_visitors,na.rm = T), beetle_poll_fraction = mean(beetle_pollinators,na.rm = T))
+
+iso_level_summaries
+```
+
+Let's now combine this with geographical data.
+```{r}
+combined_geo_data <- bind_rows(
+  ne_countries(scale = "medium", returnclass = "sf") %>%
+    select(adm0_a3, name_long, geometry, label_x, label_y) %>%
+    rename(grouping_iso_code = adm0_a3, geo_name = name_long) %>%
+    mutate(geo_level = "country"),
+  ne_states(returnclass = "sf") %>%
+    select(iso_3166_2, name, geometry, label_x = longitude, label_y = latitude) %>%
+    rename(grouping_iso_code = iso_3166_2, geo_name = name) %>%
+    mutate(geo_level = "state")
+)
+
+combined_geo_data %>% as_tibble() 
+```
+
+Now let's combine both
+```{r}
+map_plot_data = left_join(iso_level_summaries, combined_geo_data)
+map_plot_data
+```
+
+Now, let's plot our map for frequency of beetle flower visitors.
+```{r}
+world_map = world_sf %>%
+  mutate(has_data = adm0_a3 %in% map_plot_data$grouping_iso_code) %>%
+  select(has_data)
+
+states_map = ne_states() %>%
+  filter(adm0_a3 %in% higher_lat_range_codes[-1] | iso_3166_2 %in% c("FR-GF", "FR-MQ", "FR-GP", "FR-RE", "FR-YT")) %>%
+  mutate(has_data = iso_3166_2 %in% map_plot_data$grouping_iso_code) %>%
+  select(has_data)
+  
+
+p1 = ggplot() +
+  # Base world map
+  geom_sf(data = world_map, aes(fill = has_data), color = gray(0.5)) +
+  geom_sf(data = states_map, aes(fill = has_data, alpha = has_data), color = gray(0.5)) +
+  scale_alpha_manual(values = c("TRUE" = 1 , "FALSE" = 0)) +
+  scale_fill_manual(values = c("TRUE" = gray(0.95), "FALSE" = gray(0.95))) +
+  # Add bubbles at label positions
+  geom_point(data = map_plot_data %>% filter(!is.na(n_records)),
+             aes(x = label_x, y = label_y,
+                 size = n_records, # use sqrt for area proportional scaling
+                 color = beetle_fraction),
+             alpha = 0.7) +
+  # Customize appearance
+  scale_size_continuous(name = "Number of Records",
+                       breaks = c(1, 10, 100),
+                       labels = c(1, 10, 100),
+                       range = c(0, 3.5)) +
+  scale_color_viridis_c(name = "Proportion of records",
+                        limits = c(0, 1),
+                        breaks = c(0,0.5,1),
+                        labels = c(0,0.5,1),
+                        option = "turbo") +
+  # Theme customization
+  labs(title = "Beetle flower visitors", x = NULL, y = NULL) +
+  theme_minimal() +
+  guides(fill = "none", alpha="none",
+         size = guide_legend(
+    title.position = "top",
+    title.hjust = 0.5  # Centers the title horizontally
+  ),
+  color = guide_colorbar(
+    title.position = "top",
+    title.hjust = 0.5,
+    barwidth = 4,
+    barheight = 0.5
+  )) +
+  theme(text = element_text(size=8),
+        legend.position = "bottom",
+    legend.box = "horizontal",
+    legend.key.size = unit(0.4, "lines"),
+    legend.spacing.x = unit(0.1, "cm"),
+    legend.margin = margin(t = 0, r = 0, b = 0, l = 0, unit = "pt"))
+
+p1
+```
+Now the same bu for pollinators
+```{r}
+
+p2 = ggplot() +
+  # Base world map
+  geom_sf(data = world_map, aes(fill = has_data), color = gray(0.5)) +
+  geom_sf(data = states_map, aes(fill = has_data, alpha = has_data), color = gray(0.5)) +
+  scale_alpha_manual(values = c("TRUE" = 1 , "FALSE" = 0)) +
+  scale_fill_manual(values = c("TRUE" = gray(0.95), "FALSE" = gray(0.95))) +
+  # Add bubbles at label positions
+  geom_point(data = map_plot_data %>% filter(!is.na(n_records)),
+             aes(x = label_x, y = label_y,
+                 size = n_records, # use sqrt for area proportional scaling
+                 color = beetle_poll_fraction),
+             alpha = 0.7) +
+  # Customize appearance
+  scale_size_continuous(name = "Number of Records",
+                       range = c(0, 3.5)) +
+  scale_color_viridis_c(name = "Proportion of records",
+                        limits = c(0, 1),
+                        option = "turbo") +
+  # Theme customization
+  labs(title = "Beetle Pollinators", x = NULL, y = NULL) +
+  theme_minimal() +
+  guides(fill = "none", alpha="none", color = "none", size = "none") +
+  theme(legend.position = 'bottom', text = element_text(size=8))
+
+p2
+```
+
+```{r}
+# Now combine the plots with specific arrangement of legends
+combined_map <- patchwork::wrap_plots(
+  p1,
+  p2,
+  ncol = 1
+) +
+  plot_layout(guides = 'collect') +  # This collects and combines similar legends
+  plot_annotation(
+    theme = theme(
+      legend.position = 'bottom',
+    )
+  )
+
+combined_map
+```
+
+## Plot dataset characteristics
+
+Now let's show other aspects of the dataset. How many studies are included in this figure?
+```{r}
+filtered_state_level_records %>% pull(bibtex_id) %>% unique() %>% length()
+```
+
+And how many records?
+```{r}
+nrow(filtered_state_level_records)
+```
+
+
+What is the distribution of number of records per study?
+```{r}
+filtered_state_level_records %>% group_by(bibtex_id) %>%
+  summarise(N=n()) %>%
+  ggplot() + geom_histogram(aes(x=N))
+```
+
+What is the proportion of records with unbiased sampling, split between those that have found beetles and those that have not?
+```{r}
+bias_vs_beetle = filtered_state_level_records %>%
+  select(beetle_visitors, methods_unbiased) %>%
+  group_by_all() %>%
+  summarise(N=n()) %>%
+  group_by(methods_unbiased) %>%
+  mutate(p = N/sum(N)) %>%
+  arrange(methods_unbiased)
+
+bias_vs_beetle
+```
+
+```{r}
+bias_vs_beetlepollinator = filtered_state_level_records %>%
+  select(beetle_pollinators, methods_unbiased) %>%
+  group_by_all() %>%
+  summarise(N=n()) %>%
+  group_by(methods_unbiased) %>%
+  mutate(p = N/sum(N)) %>%
+  arrange(methods_unbiased)
+
+bias_vs_beetlepollinator
+```
+Now let's plot those tables as barplots
+
+```{r}
+barplot_df = filtered_state_level_records %>%
+  select(beetle_visitors, beetle_pollinators, methods_unbiased) %>%
+  group_by_all() %>%
+  summarise(N = n(), .groups = 'drop') %>%  # Added .groups = 'drop' to avoid grouping warning
+  group_by(methods_unbiased) %>%
+  mutate(p = N/sum(N)) %>%
+  arrange(methods_unbiased) %>%
+  mutate(beetle_status = case_when(
+    beetle_pollinators ~ "beetle pollinator",
+    beetle_visitors ~ "beetle nonpollinator",
+    TRUE ~ "no beetles"
+  )) %>%
+  ungroup() %>%
+  mutate(
+    # Create a new factor with updated labels while preserving the correct mapping
+    beetle_status = factor(
+      case_when(
+        beetle_status == "no beetles" ~ "none",
+        beetle_status == "beetle nonpollinator" ~ "nonpollinators",
+        beetle_status == "beetle pollinator" ~ "pollinators"
+      ),
+      # Set the order we want the categories to appear in the stack
+      levels = c("pollinators", "nonpollinators", "none")
+    )
+  )
+
+p_bars = ggplot(barplot_df, aes(x = methods_unbiased, y = N, fill = beetle_status)) +
+  geom_bar(stat = "identity", position = "stack") +
+  geom_text(
+    aes(label = scales::percent(p, accuracy = 1)),
+    position = position_stack(vjust = 0.5),
+    color = "white",
+    size = 2
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  scale_x_discrete(
+    labels = c("FALSE" = "targeted", 
+              "TRUE" = "broad")
+  ) +
+  labs(
+    x = "Flower Visitor Sampling Method",
+    y = "Number of records in literature",
+    fill = "Beetle flower visitors"
+  ) +
+  theme_minimal() +
+  guides(fill = guide_legend(title.position = "top",
+    title.hjust = 0.5)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        text = element_text(size=8),
+               legend.position = "bottom",
+    legend.box = "horizontal",
+    legend.key.size = unit(0.4, "lines"),
+    legend.spacing.x = unit(0.1, "cm"),
+    legend.margin = margin(t = 0, r = 0, b = 0, l = 0, unit = "pt")
+        )
+
+p_bars
+```
+
+Finally, let's have a look at the years of publication in the studies included. Let's first load bibliographic information for all studies (including those we failed to obtain data). Since R parsers do not seem to be able to read this bibtex appropriately, let's use python for that, and then communicate with R through reticulate.
+
+
+```{python}
+from pybtex.database.input import bibtex
+import pandas as pd
+
+def parse_bibtex(file_path):
+    parser = bibtex.Parser()
+    bib_data = parser.parse_file(file_path)
+    
+    # Convert to a more R-friendly format
+    entries = []
+    for key, entry in bib_data.entries.items():
+        authors = " and ".join(str(person) for person in entry.persons.get('author', []))
+        entries.append({
+            'key': key,
+            'authors': authors,
+            'year': entry.fields.get('year', ''),
+            'title': entry.fields.get('title', ''),
+            'journal': entry.fields.get('journal', '')
+        })
+    
+    return pd.DataFrame(entries)
+
+# Parse your BibTeX file
+df = parse_bibtex("pdfs/export_20250131/export_20250131.updated.bib")
+```
+
+```{r}
+bibliography = as_tibble(py$df) %>%
+  mutate(year = as.numeric(year)) %>%
+  select(bibtex_id = key,year_published = year)
+bibliography
+```
+Now let's join this bibliographic information with the dataset containing records:
+```{r}
+year_plot_df <- filtered_state_level_records %>% 
+  # Join with bibliography data
+  left_join(bibliography) %>%
+  # grouping to count papers per year and beetle status
+  group_by(year_published, beetle_visitors, beetle_pollinators) %>%
+  summarise(
+    N = n(),
+    .groups = "drop"  # Explicitly drop grouping again
+  ) %>%
+  # Create the beetle status factor
+  mutate(beetle_status = factor(case_when(
+    beetle_pollinators ~ "pollinators",
+    beetle_visitors ~ "nonpollinators",
+    TRUE ~ "none"
+  ),
+  levels = c("pollinators", "nonpollinators", "none")
+  )) %>%
+  filter(year_published < 2025)
+
+year_plot_df
+```
+
+Let's visualize the number of records over time.
+
+```{r}
+p_years = ggplot(year_plot_df, aes(x = year_published, y = N, fill = beetle_status)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_brewer(palette = "Set2") +
+  scale_x_continuous(
+    breaks = seq(min(year_plot_df$year_published), 
+                max(year_plot_df$year_published), 
+                by = 10)  # Creates breaks every 10 years
+  ) +
+  labs(
+    x = "Year of publication",
+    y = "Number of records in literature",
+    fill = "Beetle flower visitors"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.minor = element_blank(),  # Removes minor grid lines for cleaner look
+    legend.position = "bottom",
+    text = element_text(size = 8)
+  ) +
+  scale_x_continuous(breaks=seq(1930,2020,by=10))
+
+p_years
+```
+Now let's visualize the proportion of records of each kind over time.
+
+```{r}
+# Calculate proportions within each year
+year_plot_df_prop <- year_plot_df %>%
+  # Group by year to calculate proportions
+  group_by(year_published) %>%
+  # Calculate the proportion for each beetle status within each year
+  mutate(
+    proportion = N / sum(N)
+  ) %>%
+  ungroup()
+
+ggplot(year_plot_df_prop, aes(x = year_published, y = proportion, fill = beetle_status)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_brewer(palette = "Set2") +
+  scale_x_continuous(
+    breaks = seq(min(year_plot_df_prop$year_published), 
+                max(year_plot_df_prop$year_published), 
+                by = 10)
+  ) +
+  # Add a percentage scale for the y-axis
+  scale_y_continuous(
+    labels = scales::percent,  # Format y-axis labels as percentages
+    breaks = seq(0, 1, 0.2)    # Set breaks at 20% intervals
+  ) +
+  labs(
+    x = "Year of publication",
+    y = "Proportion of records",
+    fill = "Beetle flower visitors"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.minor = element_blank()
+  )
+
+```
+
+
+Let's now join the two plots
+
+```{r}
+# Now combine the plots with specific arrangement of legends
+combined_bars <- patchwork::wrap_plots(
+  p_bars,
+  p_years + guides(fill='none'),
+  ncol = 1
+) +
+  plot_layout(guides = 'collect') +  # This collects and combines similar legends
+  plot_annotation(
+    theme = theme(
+      legend.position = 'bottom',  # Put all legends on the right
+    )
+  )
+
+combined_bars
+```
+## Save plots
+
+Finally, let's save all plots to use as figures in the paper.
+
+```{r}
+combined_plot = cowplot::plot_grid(combined_map, combined_bars, ncol =2,rel_widths = c(2,1.5))
+combined_plot
+```
+
+```{r}
+ggsave(filename = 'figures/fig1.pdf',device = 'pdf',width = 6.33,units = 'in', height = 5, useDingbats=F)
+ggsave(combined_map, filename = 'figures/fig1A.pdf',device = 'pdf',width = 4,units = 'in', height = 6, useDingbats=F)
+ggsave(combined_bars, filename = 'figures/fig1BC.pdf',device = 'pdf',units = 'mm', height = 118, width=59, useDingbats=F)
+```
+
+# Produce supplementary table 1
+
+Here we will summarize information by beetle family, to help us produce Supplementary Table 1 by identifying records of beetle flower visitors that have not yet been properly recognized as such in the literature.
+
+Let's now list all of the beetle families mentioned across the studies.
+
+```{r}
+filtered_state_level_records$beetle_families %>%
+  unlist %>%
+  unique %>%
+  sort %>%
+  paste(collapse="\n") %>%
+  cat()
+```
+
+After filtering the list manually, the following do not seem to have been recorded as flower visitors before in the literature:
+```{r}
+target_families <- c("Bostrichidae", "Byrrhidae", "Byturidae", "Cicindelidae",
+                     "Cucujidae", "Dascillidae", "Dytiscidae",
+                    "Hybosoridae", "Latridiidae", "Lathridiidae", "Leiodidae", "Lymexylidae",
+                    "Monotomidae", "Pentatomidae", "Phalacradidae", "Phalacridae",
+                    "Phalacrididae", "Silvanidae", "Silvannidae","Ptiliidae")
+
+target_families
+```
+
+Let's find which studies mention them:
+```{r}
+newly_reported_families = filtered_state_level_records %>%
+  mutate(
+    # Check if any family matches (returns TRUE/FALSE)
+    has_target_family = map_lgl(beetle_families, 
+                               ~any(.x %in% target_families)),
+    
+    # Get the actual matching families as a string
+    matching_families = map_chr(beetle_families, function(x) {
+      matches <- x[x %in% target_families]
+      if(length(matches) > 0) str_c(matches, collapse = ", ") else NA_character_
+    })
+  ) %>%
+  filter(has_target_family) %>%
+  mutate(families_string = map_chr(matching_families, ~str_c(.x, collapse = ", "))) %>%
+  select(bibtex_id,families_string) %>%
+  distinct() %>%
+  arrange(families_string)
+
+newly_reported_families
+```
+
+Let's now print a report of these studies including any noteworthy facts the LLM was able to pull:
+
+```{r}
+format_reference <- function(bibtex_id, df) {
+  # Get bibliographic record
+  record <- df %>% 
+    filter(key == bibtex_id) %>%
+    as.list()
+  
+  # Get beetle families for this specific reference
+  beetle_fams <- filtered_state_level_records %>%
+    filter(bibtex_id == !!bibtex_id) %>%
+    pull(beetle_families) %>%
+    unlist() %>%
+    unique() %>%
+    paste(collapse = ", ")
+  
+  # Get noteworthy fact
+  fact <- review_data[[bibtex_id]]$json$noteworthy_beetle_fact
+  
+  # Format author names more nicely
+  authors <- str_split(record$authors, " and ")[[1]]
+  
+  # Create formatted string
+  cat(sprintf("Reference ID: %s\n", record$key),
+      sprintf("Authors: %s\n", paste(authors, collapse = "; ")),
+      sprintf("Year: %s\n", record$year),
+      sprintf("Title: %s\n", record$title),
+      sprintf("Journal: %s\n", record$journal),
+      sprintf("Beetle families: %s\n", beetle_fams),
+      if(!is.null(fact)) sprintf("Noteworthy fact: %s\n", fact),
+      "\n",
+      sep = "")
+}
+
+# Function to print all references
+print_references <- function(bibtex_ids, df) {
+  walk(bibtex_ids, ~format_reference(.x, df))
+}
+
+# Usage:
+newly_reported_families %>%
+  mutate(bibtex_id = as.character(bibtex_id)) %>%
+  arrange(tolower(bibtex_id)) %>%
+  pull(bibtex_id) %>%
+  print_references(py$df)
+```
+
+# Supplementary Table 2
+
+To assist producing supplementary table 2, we will now summarize the data by plant family.
+
+Finally, let's list all plant families in our dataset, all families with beetle flower visitors and all families with beetle pollinators. Let's start by grouping references for each case:
+
+```{r}
+references_for_plant_families <- filtered_state_level_records %>%
+  select(plant_family = plant_family_name, beetle_visitors, beetle_pollinators, bibtex_id, beetle_families) %>%
+  group_by(plant_family, beetle_visitors, beetle_pollinators) %>%
+  summarise(
+    bibtex_ids = list(unique(bibtex_id)),
+    beetle_families = list(unique(unlist(beetle_families[!sapply(beetle_families, is.null)]))),
+    .groups = 'drop'
+  )
+
+references_for_plant_families
+```
+
+We will now reconcile beetle family names  following Cai et al. Let's create a function to map names read by Sonnet to the accepted names. For the cases in which the beetle is not a family, but a lower-level taxon, we will map to the corresponding family.
+
+```{r}
+# Define the mapping of various names to their accepted families
+beetle_names <- tibble(
+  original_name = c(
+    "Acmaeoderidae", "Alleculidae", "Alleculiidae", "Allecullidae", "Allecuninae",
+    "Allocorynidae", "Alticidae", "Amecocerus spp.", "Anaspidae", "Anobiidae",
+    "Anthicidae", "Anthribidae", "Attelabidae", "Belidae", "Boganiidae",
+    "Bostrichidae", "Brenthidae", "Brentidae", "Bruchidae", "Bruchinae",
+    "Buprestidae", "Buprestridae", "Byrrhidae", "Byturidae", "Cantharidae",
+    "Carabidae", "Carpophyllus", "Carpophylus", "Cebrionidae", "Cephaloidae",
+    "Cerambicidae", "Cerambicydae", "Cerambycidae", "Cetonidae", "Cetoniidae",
+    "Cetoniinae", "Chrysomelidae", "Cicindelidae", "Cleridae", "Cleroidea",
+    "Coccidellidae", "Coccinelidae", "Coccinellidae", "Colegtera", "Coleoptera",
+    "Colydidae", "Colydiidae", "Corylophidae", "Crioceridae", "Cryptophagidae",
+    "Cryptophilidae", "Crysomelidae", "Cucujidae", "Cucurlionidae", "Culculionidae",
+    "Curculionidae", "Curculionoidea", "Dascillidae", "Dasytaeidae", "Dasytidae",
+    "Dermestidae", "Dryophthoridae", "Dynastidae", "Dynastinae", "Dytiscidae",
+    "Elateridae", "Elatyridae", "Erotylidae", "Eucmenidae", "Eucnemanidae",
+    "Galerucidae", "Galerucinae", "Geotrupidae", "Glaphyridae", "Halodidae",
+    "Helodidae", "Histeridae", "Hopliidae", "Hybosoridae", "Hydrophilidae",
+    "Kateretidae", "Lagridae", "Lagriidae", "Lampyridae", "Languriidae",
+    "Lathridiidae", "Latridiidae", "Leiodidae", "Lycidae", "Lyctidae",
+    "Lymexylidae", "Malachidae", "Malachiidae", "Malachiinae", "Maloidea",
+    "Megalopodidae", "Melachiidae", "Melandryidae", "Meliodae", "Meliridae",
+    "Meloidae", "Meloididae", "Melolinthinae", "Melolonthidae", "Melolontidae",
+    "Melotonthidae", "Melyridae", "Monotomidae", "Mordelidae", "Mordellidae",
+    "Mycetophagidae", "Mycteridae", "Mylabridae", "Nitidulidae", "none",
+    "not specified", "Oedemeridae", "Oedemeriidae", "Oedomeridae", "Oemideridae",
+    "Orsodacnidae", "Pentatomidae", "Phalacradidae", "Phalacridae", "Phalacrididae",
+    "Ptiliidae", "Ptilliidae", "Ptinidae", "Pythidae", "Rhipiphoridae",
+    "Rhizophagidae", "Ripiphoridae", "Ripriphoridae", "Rutelidae", "Rutelinae",
+    "Scarabaeidae", "Scarabaeidae (Rutelinae)", "Scarabeidae", "Scarabidae",
+    "Scaraboidea", "Scirtidae", "Scolytidae", "Scraptiidae", "Scydmaenidae",
+    "Sessinia", "Silphidae", "Silvanidae", "Silvannidae", "Staphilinidae",
+    "Staphylinidae", "Sylphidae", "Sylvaniidae", "Tenebrionidae", "Trogossitidae",
+    "Undetermined", "Unidentified Coleoptera", "unspecified", "Zopheridae"
+  ),
+  accepted_family = c(
+    "Buprestidae",           # Acmaeoderidae -> now part of Buprestidae
+    "Tenebrionidae",         # Alleculidae -> now Tenebrionidae (Alleculinae)
+    "Tenebrionidae",         # Alleculiidae -> misspelling
+    "Tenebrionidae",         # Allecullidae -> misspelling
+    "Tenebrionidae",         # Allecuninae -> misspelling
+    "Belidae",                      # Allocorynidae -> not found in classification
+    "Chrysomelidae",         # Alticidae -> now part of Chrysomelidae
+    NA,                      # Amecocerus spp. -> genus level, can't map
+    "Scraptiidae",           # Anaspidae -> subfamily Anaspidinae of Scraptiidae
+    "Ptinidae",             # Anobiidae -> now Ptinidae
+    "Anthicidae",           # Anthicidae
+    "Anthribidae",          # Anthribidae
+    "Attelabidae",          # Attelabidae
+    "Belidae",              # Belidae
+    "Boganiidae",           # Boganiidae
+    "Bostrichidae",         # Bostrichidae
+    "Brentidae",            # Brenthidae -> now Brentidae
+    "Brentidae",            # Brentidae
+    "Chrysomelidae",        # Bruchidae -> now subfamily of Chrysomelidae
+    "Chrysomelidae",        # Bruchinae -> subfamily of Chrysomelidae
+    "Buprestidae",          # Buprestidae
+    "Buprestidae",          # Buprestridae -> misspelling
+    "Byrrhidae",            # Byrrhidae
+    "Byturidae",            # Byturidae
+    "Cantharidae",          # Cantharidae
+    "Carabidae",            # Carabidae
+    "Nitidulidae",          # Carpophyllus -> misspelling of Carpophilus (Nitidulidae)
+    "Nitidulidae",          # Carpophylus -> misspelling of Carpophilus (Nitidulidae)
+    "Elateridae",           # Cebrionidae -> now part of Elateridae
+    "Stenotrachelidae",     # Cephaloidae -> subfamily of Stenotrachelidae
+    "Cerambycidae",         # Cerambicidae -> misspelling
+    "Cerambycidae",         # Cerambicydae -> misspelling
+    "Cerambycidae",         # Cerambycidae
+    "Scarabaeidae",         # Cetonidae -> now part of Scarabaeidae
+    "Scarabaeidae",         # Cetoniidae -> now part of Scarabaeidae
+    "Scarabaeidae",         # Cetoniinae -> subfamily of Scarabaeidae
+    "Chrysomelidae",        # Chrysomelidae
+    "Carabidae",            # Cicindelidae -> now part of Carabidae
+    "Cleridae",             # Cleridae
+    NA,                     # Cleroidea -> superfamily, not family
+    "Coccinellidae",        # Coccidellidae -> misspelling
+    "Coccinellidae",        # Coccinelidae -> misspelling
+    "Coccinellidae",        # Coccinellidae
+    NA,                     # Colegtera -> misspelling of order name
+    NA,                     # Coleoptera -> order name, not family
+    "Zopheridae",           # Colydidae -> now part of Zopheridae
+    "Zopheridae",           # Colydiidae -> now part of Zopheridae
+    "Corylophidae",         # Corylophidae
+    "Chrysomelidae",        # Crioceridae -> now subfamily of Chrysomelidae
+    "Cryptophagidae",       # Cryptophagidae
+    "Erotylidae",           # Cryptophilidae -> subfamily of Erotylidae
+    "Chrysomelidae",        # Crysomelidae -> misspelling
+    "Cucujidae",            # Cucujidae
+    "Curculionidae",        # Cucurlionidae -> misspelling
+    "Curculionidae",        # Culculionidae -> misspelling
+    "Curculionidae",        # Curculionidae
+    NA,                     # Curculionoidea -> superfamily, not family
+    "Dascillidae",          # Dascillidae
+    "Melyridae",            # Dasytaeidae -> now part of Melyridae
+    "Melyridae",            # Dasytidae -> now part of Melyridae
+    "Dermestidae",          # Dermestidae
+    "Curculionidae",        # Dryophthoridae -> subfamily of Curculionidae
+    "Scarabaeidae",         # Dynastidae -> now subfamily of Scarabaeidae
+    "Scarabaeidae",         # Dynastinae -> subfamily of Scarabaeidae
+    "Dytiscidae",           # Dytiscidae
+    "Elateridae",           # Elateridae
+    "Elateridae",           # Elatyridae -> misspelling
+    "Erotylidae",           # Erotylidae
+    "Eucnemidae",           # Eucmenidae -> misspelling
+    "Eucnemidae",           # Eucnemanidae -> misspelling
+    "Chrysomelidae",        # Galerucidae -> now subfamily of Chrysomelidae
+    "Chrysomelidae",        # Galerucinae -> subfamily of Chrysomelidae
+    "Geotrupidae",          # Geotrupidae
+    "Glaphyridae",          # Glaphyridae
+    "Scirtidae",            # Halodidae -> old name for Scirtidae
+    "Scirtidae",            # Helodidae -> old name for Scirtidae
+    "Histeridae",           # Histeridae
+    "Scarabaeidae",         # Hopliidae -> now part of Scarabaeidae
+    "Hybosoridae",          # Hybosoridae
+    "Hydrophilidae",        # Hydrophilidae
+    "Kateretidae",          # Kateretidae
+    "Tenebrionidae",        # Lagridae -> now subfamily of Tenebrionidae
+    "Tenebrionidae",        # Lagriidae -> now subfamily of Tenebrionidae
+    "Lampyridae",           # Lampyridae
+    "Erotylidae",           # Languriidae -> now subfamily of Erotylidae
+    "Latridiidae",          # Lathridiidae -> variant spelling
+    "Latridiidae",          # Latridiidae
+    "Leiodidae",            # Leiodidae
+    "Lycidae",              # Lycidae
+    "Bostrichidae",         # Lyctidae -> now subfamily of Bostrichidae
+    "Lymexylidae",          # Lymexylidae
+    "Melyridae",            # Malachidae -> now part of Melyridae
+    "Melyridae",            # Malachiidae -> now part of Melyridae
+    "Melyridae",            # Malachiinae -> subfamily of Melyridae
+    NA,                     # Maloidea -> not a valid family name
+    "Megalopodidae",        # Megalopodidae
+    "Melyridae",            # Melachiidae -> misspelling
+    "Melandryidae",         # Melandryidae
+    "Meloidae",             # Meliodae -> misspelling
+    "Melyridae",            # Meliridae -> variant spelling
+    "Meloidae",             # Meloidae
+    "Meloidae",             # Meloididae -> misspelling
+    "Scarabaeidae",         # Melolinthinae -> misspelling of Melolonthinae
+    "Scarabaeidae",         # Melolonthidae -> now subfamily of Scarabaeidae
+    "Scarabaeidae",         # Melolontidae -> misspelling
+    "Scarabaeidae",         # Melotonthidae -> misspelling
+    "Melyridae",            # Melyridae
+    "Monotomidae",          # Monotomidae
+    "Mordellidae",          # Mordelidae -> misspelling
+    "Mordellidae",          # Mordellidae
+    "Mycetophagidae",       # Mycetophagidae
+    "Mycteridae",           # Mycteridae
+    "Chrysomelidae",        # Mylabridae -> old name for Bruchinae
+    "Nitidulidae",          # Nitidulidae
+    NA,                     # none
+    NA,                     # not specified
+    "Oedemeridae",          # Oedemeridae
+    "Oedemeridae",          # Oedemeriidae -> misspelling
+    "Oedemeridae",          # Oedomeridae -> misspelling
+    "Oedemeridae",          # Oemideridae -> misspelling
+    "Orsodacnidae",         # Orsodacnidae
+    NA,                     # Pentatomidae -> not a beetle family
+    "Phalacridae",          # Phalacradidae -> misspelling
+    "Phalacridae",          # Phalacridae
+    "Phalacridae",          # Phalacrididae -> misspelling
+    "Ptiliidae",            # Ptiliidae
+    "Ptiliidae",            # Ptilliidae -> misspelling
+    "Ptinidae",             # Ptinidae
+    "Pythidae",             # Pythidae
+    "Ripiphoridae",         # Rhipiphoridae -> variant spelling
+    "Monotomidae",          # Rhizophagidae -> now subfamily of Monotomidae
+    "Ripiphoridae",         # Ripiphoridae
+    "Ripiphoridae",         # Ripriphoridae -> misspelling
+    "Scarabaeidae",         # Rutelidae -> now subfamily of Scarabaeidae
+    "Scarabaeidae",         # Rutelinae -> subfamily of Scarabaeidae
+    "Scarabaeidae",         # Scarabaeidae
+    "Scarabaeidae",         # Scarabaeidae (Rutelinae)
+    "Scarabaeidae",         # Scarabeidae -> misspelling
+    "Scarabaeidae",         # Scarabidae -> misspelling
+    NA,                     # Scaraboidea -> superfamily, not family
+    "Scirtidae",            # Scirtidae
+    "Curculionidae",        # Scolytidae -> now subfamily of Curculionidae
+    "Scraptiidae",          # Scraptiidae
+    "Staphylinidae",        # Scydmaenidae -> now subfamily of Staphylinidae
+    "Oedemeridae",          # Sessinia -> genus in Oedemeridae
+    "Staphylinidae",            # Silphidae
+    "Silvanidae",           # Silvanidae
+    "Silvanidae",           # Silvannidae -> misspelling
+    "Staphylinidae",        # Staphilinidae -> misspelling
+    "Staphylinidae",        # Staphylinidae
+    "Staphylinidae",            # Sylphidae -> misspelling
+    "Silvanidae",           # Sylvaniidae -> misspelling
+    "Tenebrionidae",        # Tenebrionidae
+    "Trogossitidae",        # Trogossitidae
+    NA,                     # Undetermined
+    NA,                     # Unidentified Coleoptera
+    NA,                     # unspecified
+    "Zopheridae"            # Zopheridae
+  )
+)
+
+# Create a function to standardize the mapping
+get_accepted_family <- function(original_name) {
+  # Convert input to proper case to match our mapping table
+  original_name <- str_to_title(original_name)
+  
+  # Map each name individually
+  sapply(original_name, function(name) {
+    mapping <- beetle_names %>%
+      filter(original_name == name) %>%
+      pull(accepted_family)
+    
+    # Return NA if no mapping found, otherwise return the accepted family name
+    if (length(mapping) == 0) NA else mapping[1]
+  })
+}
+
+# Example usage:
+# get_accepted_family("Scolytidae")  # Returns "Curculionidae"
+# get_accepted_family("InvalidName") # Returns NA
+```
+
+
+Now let's apply this mapping:
+```{r}
+plant_family_output_df = references_for_plant_families %>%
+    rowwise() %>%
+    mutate(
+        beetle_families = list({
+            if(is.null(beetle_families)) {
+                NULL
+            } else if(length(unlist(beetle_families)) > 0) {
+                families <- unlist(beetle_families)
+                accepted <- get_accepted_family(families)
+                unique(accepted)
+            } else {
+                character(0)
+            }
+        })
+    )
+
+plant_family_output_df
+```
+How many plant families total have had beetle flower visitors recorded?
+```{r}
+plant_family_output_df %>%
+  filter(beetle_visitors | beetle_pollinators) %>%
+  pull(plant_family) %>%
+  unique %>%
+  length()
+```
+
+How many plant families total do we have?
+```{r}
+plant_family_output_df %>%
+  pull(plant_family) %>%
+  unique %>%
+  length()
+```
+
+How many plant families total have at least one paper mentioning beetle pollinators?
+```{r}
+plant_family_output_df %>%
+  filter(beetle_pollinators) %>%
+  pull(plant_family) %>%
+  unique %>%
+  length()
+```
+
+What are those families?
+```{r}
+plant_family_output_df %>%
+  filter(beetle_pollinators) %>%
+  rowwise() %>%
+  mutate(N_references = length(unlist(bibtex_ids))) %>%
+  ungroup() %>%
+  arrange(desc(N_references))
+```
+
+
+# Plotting beetle phylogeny
+
+We will now create a visualization of beetle phylogeny highlighting flower-visiting families. The visualization is based on:
+
+1. A phylogenetic tree from `Cai_et_al_phylo/FigTree.tre` (from Cai et al, 2022)
+2. Taxonomic classification from the supplement in Cai et al, 2022
+3. Data on flower-visiting behavior from our review (Supplementary Table 1)
+
+
+## Create Taxonomic Database
+
+We will create a data frame of beetle taxonomy, including suborders, superfamilies, and families from Cai et al (2022). We'll now add information about which families are known to visit flower from our Supplementary Table 1.
+
+```{r taxonomy}
+beetle_taxonomy <- tribble(
+  ~Suborder, ~Superfamily, ~Family,
+  # ADEPHAGA
+  "Adephaga", "Caraboidea", "Carabidae",  
+  "Adephaga", "Caraboidea", "Cicindelidae",
+  "Adephaga", "Caraboidea", "Trachypachidae",
+  "Adephaga", "Dytiscoidea", "Amphizoidae",
+  "Adephaga", "Dytiscoidea", "Aspidytidae",
+  "Adephaga", "Dytiscoidea", "Dytiscidae",
+  "Adephaga", "Dytiscoidea", "Hygrobiidae",
+  "Adephaga", "Dytiscoidea", "Meruidae",
+  "Adephaga", "Dytiscoidea", "Noteridae",
+  "Adephaga", "Gyrinoidea", "Gyrinidae",
+  "Adephaga", "Haliploidea", "Haliplidae",
+  
+  # ARCHOSTEMATA
+  "Archostemata", "Cupedoidea", "Crowsoniellidae",
+  "Archostemata", "Cupedoidea", "Cupedidae",
+  "Archostemata", "Cupedoidea", "Micromalthidae",
+  "Archostemata", "Cupedoidea", "Ommatidae",
+  
+  # MYXOPHAGA
+  "Myxophaga", "Lepiceroidea", "Lepiceridae",
+  "Myxophaga", "Sphaeriusoidea", "Hydroscaphidae",
+  "Myxophaga", "Sphaeriusoidea", "Sphaeriusidae",
+  "Myxophaga", "Sphaeriusoidea", "Torridincolidae",
+  
+  # POLYPHAGA
+  "Polyphaga", "Bostrichoidea", "Bostrichidae",
+  "Polyphaga", "Bostrichoidea", "Dermestidae",
+  "Polyphaga", "Bostrichoidea", "Ptinidae",
+  
+  "Polyphaga", "Buprestoidea", "Buprestidae",
+  "Polyphaga", "Buprestoidea", "Schizopodidae",
+  
+  "Polyphaga", "Byrrhoidea", "Byrrhidae",
+  
+  "Polyphaga", "Dryopoidea", "Callirhipidae",
+  "Polyphaga", "Dryopoidea", "Chelonariidae",
+  "Polyphaga", "Dryopoidea", "Dryopidae",
+  "Polyphaga", "Dryopoidea", "Elmidae",
+  "Polyphaga", "Dryopoidea", "Eulichadidae",
+  "Polyphaga", "Dryopoidea", "Heteroceridae",
+  "Polyphaga", "Dryopoidea", "Limnichidae",
+  "Polyphaga", "Dryopoidea", "Lutrochidae",
+  "Polyphaga", "Dryopoidea", "Protelmidae",
+  "Polyphaga", "Dryopoidea", "Psephenidae",
+  "Polyphaga", "Dryopoidea", "Ptilodactylidae",
+  "Polyphaga", "Dryopoidea", "Cneoglossidae",
+
+
+  
+  "Polyphaga", "Chrysomeloidea", "Cerambycidae",
+  "Polyphaga", "Chrysomeloidea", "Chrysomelidae",
+  "Polyphaga", "Chrysomeloidea", "Disteniidae",
+  "Polyphaga", "Chrysomeloidea", "Megalopodidae",
+  "Polyphaga", "Chrysomeloidea", "Orsodacnidae",
+  "Polyphaga", "Chrysomeloidea", "Oxypeltidae",
+  "Polyphaga", "Chrysomeloidea", "Vesperidae",
+  
+  "Polyphaga", "Clamboidea", "Clambidae",
+  "Polyphaga", "Clamboidea", "Derodontidae",
+  "Polyphaga", "Clamboidea", "Eucinetidae",
+  
+  "Polyphaga", "Cleroidea", "Acanthocnemidae",
+  "Polyphaga", "Cleroidea", "Biphyllidae",
+  "Polyphaga", "Cleroidea", "Byturidae",
+  "Polyphaga", "Cleroidea", "Chaetosomatidae",
+  "Polyphaga", "Cleroidea", "Cleridae",
+  "Polyphaga", "Cleroidea", "Lophocateridae",
+  "Polyphaga", "Cleroidea", "Mauroniscidae",
+  "Polyphaga", "Cleroidea", "Melyridae",
+  "Polyphaga", "Cleroidea", "Peltidae",
+  "Polyphaga", "Cleroidea", "Phloiophilidae",
+  "Polyphaga", "Cleroidea", "Phycosecidae",
+  "Polyphaga", "Cleroidea", "Prionoceridae",
+  "Polyphaga", "Cleroidea", "Protopeltidae",
+  "Polyphaga", "Cleroidea", "Rentoniidae",
+  "Polyphaga", "Cleroidea", "Rhadalidae",
+  "Polyphaga", "Cleroidea", "Thanerocleridae",
+  "Polyphaga", "Cleroidea", "Thymalidae",
+  "Polyphaga", "Cleroidea", "Trogossitidae",
+  
+  "Polyphaga", "Coccinelloidea", "Akalyptoischiidae",
+  "Polyphaga", "Coccinelloidea", "Alexiidae",
+  "Polyphaga", "Coccinelloidea", "Anamorphidae",
+  "Polyphaga", "Coccinelloidea", "Bothrideridae",
+  "Polyphaga", "Coccinelloidea", "Cerylonidae",
+  "Polyphaga", "Coccinelloidea", "Coccinellidae",
+  "Polyphaga", "Coccinelloidea", "Corylophidae",
+  "Polyphaga", "Coccinelloidea", "Discolomatidae",
+  "Polyphaga", "Coccinelloidea", "Endomychidae",
+  "Polyphaga", "Coccinelloidea", "Eupsilobiidae",
+  "Polyphaga", "Coccinelloidea", "Euxestidae",
+  "Polyphaga", "Coccinelloidea", "Latridiidae",
+  "Polyphaga", "Coccinelloidea", "Murmidiidae",
+  "Polyphaga", "Coccinelloidea", "Mycetaeidae",
+  "Polyphaga", "Coccinelloidea", "Teredidae",
+  
+  "Polyphaga", "Cucujoidea", "Agapythidae",
+  "Polyphaga", "Cucujoidea", "Cavognathidae",
+  "Polyphaga", "Cucujoidea", "Cryptophagidae",
+  "Polyphaga", "Cucujoidea", "Cucujidae",
+  "Polyphaga", "Cucujoidea", "Cyclaxyridae",
+  "Polyphaga", "Cucujoidea", "Hobartiidae",
+  "Polyphaga", "Cucujoidea", "Laemophloeidae",
+  "Polyphaga", "Cucujoidea", "Lamingtoniidae",
+  "Polyphaga", "Cucujoidea", "Myraboliidae",
+  "Polyphaga", "Cucujoidea", "Passandridae",
+  "Polyphaga", "Cucujoidea", "Phalacridae",
+  "Polyphaga", "Cucujoidea", "Phloeostichidae",
+  "Polyphaga", "Cucujoidea", "Priasilphidae",
+  "Polyphaga", "Cucujoidea", "Prostomidae",
+  "Polyphaga", "Cucujoidea", "Silvanidae",
+  "Polyphaga", "Cucujoidea", "Tasmosalpingidae",
+  
+  "Polyphaga", "Curculionoidea", "Anthribidae",
+  "Polyphaga", "Curculionoidea", "Attelabidae",
+  "Polyphaga", "Curculionoidea", "Belidae",
+  "Polyphaga", "Curculionoidea", "Brentidae",
+  "Polyphaga", "Curculionoidea", "Caridae",
+  "Polyphaga", "Curculionoidea", "Cimberididae",
+  "Polyphaga", "Curculionoidea", "Curculionidae",
+  "Polyphaga", "Curculionoidea", "Nemonychidae",
+  
+  "Polyphaga", "Dascilloidea", "Dascillidae",
+  "Polyphaga", "Dascilloidea", "Rhipiceridae",
+  
+  "Polyphaga", "Elateroidea", "Artematopodidae",
+  "Polyphaga", "Elateroidea", "Brachypsectridae",
+  "Polyphaga", "Elateroidea", "Cantharidae",
+  "Polyphaga", "Elateroidea", "Cerophytidae",
+  "Polyphaga", "Elateroidea", "Elateridae",
+  "Polyphaga", "Elateroidea", "Eucnemidae",
+  "Polyphaga", "Elateroidea", "Iberobaeniidae",
+  "Polyphaga", "Elateroidea", "Jurasaidae",
+  "Polyphaga", "Elateroidea", "Lampyridae",
+  "Polyphaga", "Elateroidea", "Lycidae",
+  "Polyphaga", "Elateroidea", "Omethidae",
+  "Polyphaga", "Elateroidea", "Phengodidae",
+  "Polyphaga", "Elateroidea", "Rhagophthalmidae",
+  "Polyphaga", "Elateroidea", "Sinopyrophoridae",
+  "Polyphaga", "Elateroidea", "Throscidae",
+  
+  "Polyphaga", "Erotyloidea", "Boganiidae",
+  "Polyphaga", "Erotyloidea", "Erotylidae",
+  
+  "Polyphaga", "Histeroidea", "Histeridae",
+  "Polyphaga", "Histeroidea", "Sphaeritidae",
+  "Polyphaga", "Histeroidea", "Synteliidae",
+  
+  "Polyphaga", "Hydrophiloidea", "Epimetopidae",
+  "Polyphaga", "Hydrophiloidea", "Georissidae",
+  "Polyphaga", "Hydrophiloidea", "Helophoridae",
+  "Polyphaga", "Hydrophiloidea", "Hydrochidae",
+  "Polyphaga", "Hydrophiloidea", "Hydrophilidae",
+  "Polyphaga", "Hydrophiloidea", "Spercheidae",
+  
+  "Polyphaga", "Lymexyloidea", "Lymexylidae",
+  
+  "Polyphaga", "Nitiduloidea", "Helotidae",
+  "Polyphaga", "Nitiduloidea", "Kateretidae",
+  "Polyphaga", "Nitiduloidea", "Monotomidae",
+  "Polyphaga", "Nitiduloidea", "Nitidulidae",
+  "Polyphaga", "Nitiduloidea", "Protocucujidae",
+  "Polyphaga", "Nitiduloidea", "Sphindidae",
+  "Polyphaga", "Nitiduloidea", "Smicripidae",
+
+
+  
+  "Polyphaga", "Nosodendroidea", "Nosodendridae",
+  
+  "Polyphaga", "Rhinorhipoidea", "Rhinorhipidae",
+  
+  "Polyphaga", "Scarabaeoidea", "Bolboceratidae",
+  "Polyphaga", "Scarabaeoidea", "Belohinidae",
+  "Polyphaga", "Scarabaeoidea", "Diphyllostomatidae",
+  "Polyphaga", "Scarabaeoidea", "Glaphyridae",
+  "Polyphaga", "Scarabaeoidea", "Glaresidae",
+  "Polyphaga", "Scarabaeoidea", "Geotrupidae",
+  "Polyphaga", "Scarabaeoidea", "Hybosoridae",
+  "Polyphaga", "Scarabaeoidea", "Lucanidae",
+  "Polyphaga", "Scarabaeoidea", "Ochodaeidae",
+  "Polyphaga", "Scarabaeoidea", "Passalidae",
+  "Polyphaga", "Scarabaeoidea", "Pleocomidae",
+  "Polyphaga", "Scarabaeoidea", "Scarabaeidae",
+  "Polyphaga", "Scarabaeoidea", "Trogidae",
+  
+  "Polyphaga", "Scirtoidea", "Decliniidae",
+  "Polyphaga", "Scirtoidea", "Scirtidae",
+  
+  "Polyphaga", "Staphylinoidea", "Agyrtidae",
+  "Polyphaga", "Staphylinoidea", "Colonidae",
+  "Polyphaga", "Staphylinoidea", "Hydraenidae",
+  "Polyphaga", "Staphylinoidea", "Jacobsoniidae",
+  "Polyphaga", "Staphylinoidea", "Leiodidae",
+  "Polyphaga", "Staphylinoidea", "Ptiliidae",
+  "Polyphaga", "Staphylinoidea", "Staphylinidae",
+  
+  "Polyphaga", "Tenebrionoidea", "Aderidae",
+  "Polyphaga", "Tenebrionoidea", "Anthicidae",
+  "Polyphaga", "Tenebrionoidea", "Archeocrypticidae",
+  "Polyphaga", "Tenebrionoidea", "Boridae",
+  "Polyphaga", "Tenebrionoidea", "Chalcodryidae",
+  "Polyphaga", "Tenebrionoidea", "Ciidae",
+  "Polyphaga", "Tenebrionoidea", "Ischaliidae",
+  "Polyphaga", "Tenebrionoidea", "Melandryidae",
+  "Polyphaga", "Tenebrionoidea", "Meloidae",
+  "Polyphaga", "Tenebrionoidea", "Mordellidae",
+  "Polyphaga", "Tenebrionoidea", "Mycetophagidae",
+  "Polyphaga", "Tenebrionoidea", "Mycteridae",
+  "Polyphaga", "Tenebrionoidea", "Oedemeridae",
+  "Polyphaga", "Tenebrionoidea", "Promecheilidae",
+  "Polyphaga", "Tenebrionoidea", "Pterogeniidae",
+  "Polyphaga", "Tenebrionoidea", "Pyrochroidae",
+  "Polyphaga", "Tenebrionoidea", "Pythidae",
+  "Polyphaga", "Tenebrionoidea", "Ripiphoridae",
+  "Polyphaga", "Tenebrionoidea", "Salpingidae",
+  "Polyphaga", "Tenebrionoidea", "Scraptiidae",
+  "Polyphaga", "Tenebrionoidea", "Stenotrachelidae",
+  "Polyphaga", "Tenebrionoidea", "Synchroidae",
+  "Polyphaga", "Tenebrionoidea", "Tenebrionidae",
+  "Polyphaga", "Tenebrionoidea", "Tetratomidae",
+  "Polyphaga", "Tenebrionoidea", "Trictenotomidae",
+  "Polyphaga", "Tenebrionoidea", "Ulodidae",
+  "Polyphaga", "Tenebrionoidea", "Zopheridae",
+  
+  # Polyphaga incertae sedis
+  "Polyphaga", "incertae sedis", "Jurodidae"
+)
+
+# Add flower visitor information
+flower_visitors <- c("Agyrtidae", "Anthribidae", "Attelabidae", "Belidae", "Biphyllidae", "Boganiidae", "Bostrichidae", "Byrrhidae", "Brentidae", "Byturidae", "Buprestidae", "Cantharidae", "Carabidae", "Cerambycidae", "Chrysomelidae", "Cicindelidae", "Cleridae", "Coccinellidae", "Corylophidae", "Cryptophagidae", "Cucujidae", "Curculionidae", "Dascillidae", "Dermestidae", "Dytiscidae", "Elateridae", "Erotylidae", "Eucnemidae", "Geotrupidae", "Glaphyridae", "Histeridae", "Hydrophilidae", "Hybosoridae", "Kateretidae", "Laemophloeidae", "Lampyridae", "Latridiidae", "Leiodidae", "Lymexylidae", "Lucanidae", "Lycidae", "Megalopodidae", "Meloidae", "Melyridae", "Monotomidae", "Mordellidae", "Mycetophagidae", "Mycteridae", "Nemonychidae", "Nitidulidae", "Oedemeridae", "Orsodacnidae", "Phalacridae", "Ptinidae", "Ptiliidae", "Pyrochroidae", "Ripiphoridae", "Salpingidae", "Scarabaeidae", "Scraptiidae", "Scirtidae", "Silvanidae", "Sphaeroceridae", "Staphylinidae", "Stenotrachelidae", "Tenebrionidae", "Throscidae", "Trogossitidae", "Zopheridae")
+
+pollinator_families <- c("Anthribidae", "Attelabidae", "Belidae", "Biphyllidae", "Boganiidae", "Brentidae", "Byturidae", "Buprestidae", "Cantharidae", "Carabidae", "Cerambycidae", "Chrysomelidae", "Cleridae", "Coccinellidae", "Corylophidae", "Cryptophagidae", "Curculionidae", "Dermestidae", "Elateridae", "Erotylidae", "Geotrupidae", "Glaphyridae", "Hybosoridae", "Kateretidae", "Lampyridae", "Latridiidae", "Lymexylidae", "Lucanidae", "Lycidae", "Meloidae", "Melyridae", "Monotomidae", "Mordellidae", "Mycetophagidae", "Nitidulidae", "Oedemeridae", "Ptinidae", "Ptiliidae", "Pyrochroidae", "Scarabaeidae", "Scraptiidae", "Scirtidae", "Silvanidae", "Sphaeroceridae", "Staphylinidae", "Stenotrachelidae", "Tenebrionidae", "Throscidae")
+
+beetle_taxonomy$flower_visitor <- beetle_taxonomy$Family %in% flower_visitors
+beetle_taxonomy$pollinator <- beetle_taxonomy$Family %in% pollinator_families
+```
+
+## Process Phylogenetic Tree
+
+Next, we'll load and process the phylogenetic tree, removing outgroups and simplifying monophyletic groups.
+
+```{r tree_processing}
+# Read tree and remove outgroups
+tree <- read.nexus("Cai_et_al_phylo/FigTree.tre")
+outgroups <- c("Corydalidae", "Chrysopidae", "Myrmeleontidae", "Ascalaphidae")
+tips_to_keep <- tree$tip.label[!grepl(paste(outgroups, collapse="|"), tree$tip.label)]
+tree <- keep.tip(tree, tips_to_keep)
+```
+
+Update Silphidae and Cybocephalidae status
+```{r}
+tree$tip.label = str_replace(tree$tip.label, "Silphidae", "Staphylinidae") %>%
+  str_replace("Cybocephalidae", "Nitidulidae")
+```
+
+
+Collapse monophyletic family-name groups
+```{r}
+while(TRUE) {
+  changes_made <- FALSE
+  N <- Ntip(tree)
+  internal_nodes <- (N + 1):(N + tree$Nnode)
+  
+  for(node in internal_nodes) {
+    descendants <- extract.clade(tree, node)$tip.label
+    families <- unique(gsub("_.*$", "", descendants))
+    
+    if(length(families) == 1 && length(descendants) > 1) {
+      # Keep first tip, drop others
+      tips_to_drop <- descendants[-1]
+      tree <- drop.tip(tree, tips_to_drop)
+      changes_made <- TRUE
+      break  # Break the for loop as node numbers have changed
+    }
+  }
+  
+  if(!changes_made) break  # No more changes needed, exit while loop
+}
+```
+
+Rename tips
+```{r}
+# First ladderize the tree
+tree <- ladderize(tree)
+
+# Get family names
+families <- gsub("_.*$", "", tree$tip.label)
+
+# Create new labels
+new_labels <- character(length(tree$tip.label))
+family_counts <- table(families)
+
+# For each unique family
+for(family in unique(families)) {
+  # If family appears only once, use simple name
+  if(family_counts[family] == 1) {
+    new_labels[families == family] <- family
+  } else {
+    # If family appears multiple times, add numbering
+    new_labels[families == family] <- paste(family, 1:family_counts[family])
+  }
+}
+
+# Replace tip labels
+tree$tip.label <- new_labels
+```
+
+
+## Find Taxonomic Nodes
+
+First,we will update our taxonomic dataframe to relate families to tip labels. 
+```{r}
+# Get the tip labels and their corresponding families
+tip_data <- tibble(
+  node = 1:Ntip(tree),
+  tip_label = tree$tip.label,
+  Family = gsub(" \\d+$", "", tree$tip.label)  # Remove numbering from family names
+) %>%
+  # Add flower visitor information
+  mutate(is_flower_visitor = Family %in% unique(
+    beetle_taxonomy$Family[beetle_taxonomy$flower_visitor]
+  ),
+  is_pollinator = Family %in% unique(
+    beetle_taxonomy$Family[beetle_taxonomy$pollinator]
+  ),
+  beetle_status = case_when(
+   is_pollinator == TRUE ~ "pollinator",
+   is_flower_visitor == TRUE ~ "flower visitor",
+   TRUE ~ NA
+ ))
+
+# Function to find tip labels for a family
+get_tip_labels <- function(family, tip_data) {
+  matches <- tip_data$tip_label[tip_data$Family == family]
+  if(length(matches) == 0) return(NA)
+  return(matches)
+}
+
+# Create new data frame with duplicated rows for multiple tips
+new_beetle_taxonomy <- do.call(rbind, lapply(1:nrow(beetle_taxonomy), function(i) {
+  family <- beetle_taxonomy$Family[i]
+  tip_labels <- get_tip_labels(family, tip_data)
+  
+  if(length(tip_labels) == 1 && is.na(tip_labels)) {
+    # Family not in tree
+    return(cbind(beetle_taxonomy[i,], tip_label = NA))
+  } else {
+    # Create one row per tip label
+    return(do.call(rbind, lapply(tip_labels, function(tip) {
+      cbind(beetle_taxonomy[i,], tip_label = tip)
+    })))
+  }
+}))
+
+# Convert back to tibble if needed
+beetle_taxonomy <- as_tibble(new_beetle_taxonomy)
+```
+
+These are the flower visitor families missing from the tree:
+```{r}
+beetle_taxonomy %>% filter(flower_visitor, is.na(tip_label))
+```
+
+
+Now we'll identify the nodes corresponding to suborders and superfamilies.
+
+## Create Visualization
+
+Finally, we'll create the visualization with colored branches and taxonomic labels.
+```{r}
+# First rescale the tree to geological time
+tree$edge.length <- tree$edge.length * 100  # Multiply by 100 to get ~300 MY depth
+```
+
+
+```{r plot_tree, fig.width=12, fig.height=16}
+# Create base plot
+p <- ggtree(tree) + 
+  # Add gray branches
+  geom_tree(size = 0.1, color = "gray20") +
+  # Add points for flower visitors
+  geom_point(
+    data = . %>% filter(isTip & tip_data$is_flower_visitor[node] &!tip_data$is_pollinator[node]), 
+    aes(x = x, y = y),
+    color = "goldenrod",
+    size = 1
+  ) +
+  geom_point(
+    data = . %>% filter(isTip & tip_data$is_pollinator[node]), 
+    aes(x = x, y = y),
+    color = "brown1",
+    size = 1
+  ) 
+
+# First get the superfamily ranges
+superfamily_ranges <- p$data %>% 
+  filter(isTip) %>% 
+  left_join(beetle_taxonomy, by = c('label'='tip_label')) %>% 
+  group_by(Superfamily) %>% 
+  summarise(min_y = min(y), max_y = max(y)) %>% 
+  mutate(min_y = min_y - 0.4, max_y = max_y + 0.4) %>%
+  filter(!is.na(Superfamily))
+
+# Create color palette for superfamilies
+superfamily_colors <- setNames(
+  scales::hue_pal()(length(unique(beetle_taxonomy$Superfamily))),
+  unique(beetle_taxonomy$Superfamily)
+)
+
+# Create base plot
+p <- p + 
+  # Add rectangles for each superfamily
+  geom_rect(
+    data = superfamily_ranges,
+    aes(
+      ymin = min_y,
+      ymax = max_y,
+      xmin = 10,
+      xmax = 80,
+      fill = Superfamily
+    ),
+    inherit.aes = FALSE,
+    alpha = 0.7
+  ) +
+  # Add superfamily labels inside rectangles
+  geom_text(
+    data = superfamily_ranges,
+    aes(
+      x = 45,  # Center of rectangle
+      y = (min_y + max_y)/2,  # Center of rectangle
+      label = Superfamily
+    ),
+    color = 'black',
+    size = 1.5,
+    hjust = 0.5,
+  ) +
+  scale_fill_manual(values = superfamily_colors, guide = 'none') +
+  scale_color_manual(values = superfamily_colors, guide = 'none') +
+  coord_geo(
+    dat = "periods",
+    pos = "bottom", 
+    xlim = c(-330,100),
+    ylim = c(0,142),
+    neg = TRUE,
+    height = unit(0.8, "lines"),
+    size = 3,
+    center_end_labels = TRUE
+  ) +
+  scale_x_continuous(
+  breaks = seq(-300, 0, by = 50),
+  labels = abs(seq(300, 0, by = -50)),
+  
+) +
+  theme_tree2()
+
+revts(p)
+
+ggsave(filename = 'figures/Coleop_tree.pdf', device = 'pdf', useDingbats=F, height = 180, width = 100, units = 'mm' )
+```
+
+
+# Session Info
+
+```{r session_info}
+sessionInfo()
+```
+
+
+
+
+
+
+

@@ -79,4 +79,8 @@ Results were saved as both a json file (`analysis/flower_visitor_classifications
 To download paywalled papers fast, we used a script to retrieve the link from each doi using the crossref API, adding an institutional proxy to the link, and opening them in a browser in batches. We then manually download the papers with the help of Zotero connection, and curate the library at Zotero including merging duplicates. We then export a bibtex file and associated pdfs to folder `pdfs`. If some pdf did not have OCR, we did it with Adobe Acrobat.
 
 4. PDF export curation
-First, we run a script to remove duplicated pdf files (which can arise from record merges in Zotero, for example). Next, we use an Apple automator workflow to compress these files by reducing image quality. Finally, we quickly checked thumbnails of all files to make sure the main text was kept, and not a supplement.
+First, we run a script to remove duplicated pdf files (which can arise from record merges in Zotero, for example). Next, we use postscript to compress these files by reducing image quality. Finally, we quickly checked thumbnails of all files to make sure the main text was kept, and not a supplement.
+
+5. PDF data extraction
+
+6. Analyses

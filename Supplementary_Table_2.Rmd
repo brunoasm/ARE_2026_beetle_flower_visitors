@@ -1,0 +1,87 @@
+---
+title: "Supplementary Materials"
+output:
+  word_document:
+    reference_docx: default
+bibliography: "pdfs/export_20250131/export_20250131.updated.sanitized.bib"
+csl: "scripts/annual-reviews-alphabetical.csl"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# Load the saved workspace
+load(".RData")
+
+# Function to sanitize bibtex IDs
+sanitize_bibtex_id <- function(id) {
+  gsub("_back--bud_", "_backbud_", id)
+}
+
+# Function to format citation keys into proper citation syntax
+format_citations <- function(citation_list) {
+  if (is.null(citation_list) || length(citation_list) == 0) {
+    return(NA)
+  }
+  # Sanitize and format each citation key with @ prefix for pandoc citation processing
+  citations <- sapply(citation_list, function(x) paste0("@", sanitize_bibtex_id(x)))
+  paste0("(", paste(citations, collapse = "; "), ")")
+}
+
+# Function to format beetle families list
+format_beetle_families <- function(families) {
+  if (is.null(families) || length(families) == 0 || 
+      all(is.na(families)) || identical(families, list(NULL))) {
+    return("")
+  }
+  # Remove NAs and empty strings before joining
+  clean_families <- families[!is.na(families) & families != ""]
+  if (length(clean_families) == 0) return("")
+  paste(unlist(clean_families), collapse = ", ")
+}
+
+# Function to safely handle list columns
+safe_sapply <- function(x, fun) {
+  if (is.list(x)) {
+    vapply(x, fun, FUN.VALUE = character(1))
+  } else {
+    vapply(list(x), fun, FUN.VALUE = character(1))
+  }
+}
+
+# Process the dataframe
+formatted_df <- plant_family_output_df %>%
+  mutate(
+    # Convert boolean columns to Yes/No
+    beetle_visitors = ifelse(beetle_visitors, "Yes", "No"),
+    beetle_pollinators = ifelse(beetle_pollinators, "Yes", "No"),
+    # Format beetle families as comma-separated lists
+    beetle_families = safe_sapply(beetle_families, format_beetle_families),
+    # Format citations
+    references = safe_sapply(bibtex_ids, format_citations)
+  ) %>%
+  # Select and rename columns
+  select(
+    `Plant Family` = plant_family,
+    `Beetle Visitors` = beetle_visitors,
+    `Beetle Pollinators` = beetle_pollinators,
+    `Beetle Families` = beetle_families,
+    `References` = references
+  )
+
+```
+
+```{r table, results='asis'}
+# Create the table with caption
+kable(formatted_df,
+      caption = "Supplementary Table 2",
+      format = "pandoc",
+      align = c('l', 'c', 'c', 'l', 'l'),
+      na.print = "") %>%
+  kable_styling(full_width = TRUE)
+```
+
+# References
