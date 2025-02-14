@@ -1494,7 +1494,7 @@ After filtering the list manually, the following do not seem to have been record
 target_families <- c("Bostrichidae", "Byrrhidae", "Byturidae", "Cicindelidae",
                      "Cucujidae", "Dascillidae", "Dytiscidae",
                     "Hybosoridae", "Latridiidae", "Lathridiidae", "Leiodidae", "Lymexylidae",
-                    "Monotomidae", "Pentatomidae", "Phalacradidae", "Phalacridae",
+                    "Monotomidae",  "Phalacradidae", "Phalacridae",
                     "Phalacrididae", "Silvanidae", "Silvannidae","Ptiliidae")
 
 target_families
@@ -1571,6 +1571,8 @@ newly_reported_families %>%
   print_references(py$df)
 ```
 
+
+
 # Supplementary Table 2
 
 To assist producing supplementary table 2, we will now summarize the data by plant family.
@@ -1635,9 +1637,9 @@ beetle_names <- tibble(
     "Tenebrionidae",         # Alleculiidae -> misspelling
     "Tenebrionidae",         # Allecullidae -> misspelling
     "Tenebrionidae",         # Allecuninae -> misspelling
-    "Belidae",                      # Allocorynidae -> not found in classification
+    "Belidae",                      # Allocorynidae -> Belidae
     "Chrysomelidae",         # Alticidae -> now part of Chrysomelidae
-    NA,                      # Amecocerus spp. -> genus level, can't map
+    "Melyridae",                      # Amecocerus spp. -> Melyridae
     "Scraptiidae",           # Anaspidae -> subfamily Anaspidinae of Scraptiidae
     "Ptinidae",             # Anobiidae -> now Ptinidae
     "Anthicidae",           # Anthicidae
@@ -1667,7 +1669,7 @@ beetle_names <- tibble(
     "Scarabaeidae",         # Cetoniidae -> now part of Scarabaeidae
     "Scarabaeidae",         # Cetoniinae -> subfamily of Scarabaeidae
     "Chrysomelidae",        # Chrysomelidae
-    "Carabidae",            # Cicindelidae -> now part of Carabidae
+    "Cicindelidae",            # Cicindelidae -> now part of Carabidae
     "Cleridae",             # Cleridae
     NA,                     # Cleroidea -> superfamily, not family
     "Coccinellidae",        # Coccidellidae -> misspelling
@@ -1810,10 +1812,10 @@ get_accepted_family <- function(original_name) {
 # Example usage:
 # get_accepted_family("Scolytidae")  # Returns "Curculionidae"
 # get_accepted_family("InvalidName") # Returns NA
+beetle_names
 ```
 
-
-Now let's apply this mapping:
+Now let's apply the beetle family name mapping:
 ```{r}
 plant_family_output_df = references_for_plant_families %>%
     rowwise() %>%
@@ -1869,7 +1871,26 @@ plant_family_output_df %>%
   arrange(desc(N_references))
 ```
 
-# Analising co-occurence patterns
+What are the top families in beetle diversity?
+```{r}
+plant_family_output_df %>%
+  filter(!is.null(beetle_families)) %>%
+  group_by(plant_family) %>%
+  summarise(N_beetles=length(unlist(beetle_families))) %>%
+  ungroup() %>%
+  arrange(desc(N_beetles))
+```
+What are the top families in number of records with beetles?
+```{r}
+filtered_state_level_records %>% filter(beetle_visitors) %>%
+  group_by(plant_family_name) %>%
+  summarise(N_records = n()) %>%
+  ungroup() %>%
+  arrange(desc(N_records))
+```
+
+
+# Analising beetle family occurence and co-occurence patterns
 We will now analyse co-occurence patterns in beetle families and whether they are related to pollination. Let's first create the dataframe we will need. In this case, we will only keep the records in which at least one beetle family has been identified:
 ```{r}
 df_for_pcoa <- filtered_state_level_records %>%
@@ -1886,15 +1907,19 @@ df_for_pcoa <- filtered_state_level_records %>%
   
   # Process beetle families
   rowwise() %>%
-  mutate(
-    beetle_families = list(
-      if (!is.null(beetle_families) && length(unlist(beetle_families)) > 0) {
-        unique(get_accepted_family(unlist(beetle_families)))
-      } else {
-        character(0)
-      }
-    )
-  ) %>%
+      mutate(
+        beetle_families = list({
+            if(is.null(beetle_families)) {
+                NULL
+            } else if(length(unlist(beetle_families)) > 0) {
+                families <- unlist(beetle_families)
+                accepted <- get_accepted_family(families)
+                unique(accepted)
+            } else {
+                character(0)
+            }
+        })
+    ) %>%
   
   # Create presence/absence matrix
   select(record_id, plant_family_name, beetle_status, beetle_families) %>%
@@ -1907,6 +1932,17 @@ df_for_pcoa <- filtered_state_level_records %>%
   )
 
 df_for_pcoa
+```
+
+Let's use this now to count the number of records for each family:
+```{r}
+df_for_pcoa %>% 
+  select(-record_id, -plant_family_name, -beetle_status) %>% 
+  ungroup() %>%
+  summarise_all(sum) %>%
+  pivot_longer(cols = everything(), names_to = "family",values_to = "N_records") %>%
+  arrange(desc(N_records)) %>%
+  mutate(p_records = N_records/nrow(filtered_state_level_records))
 ```
 
 Let's now do the PCoA and plot:
@@ -2261,9 +2297,9 @@ beetle_taxonomy <- tribble(
 )
 
 # Add flower visitor information
-flower_visitors <- c("Agyrtidae", "Anthribidae", "Attelabidae", "Belidae", "Biphyllidae", "Boganiidae", "Bostrichidae", "Byrrhidae", "Brentidae", "Byturidae", "Buprestidae", "Cantharidae", "Carabidae", "Cerambycidae", "Chrysomelidae", "Cicindelidae", "Cleridae", "Coccinellidae", "Corylophidae", "Cryptophagidae", "Cucujidae", "Curculionidae", "Dascillidae", "Dermestidae", "Dytiscidae", "Elateridae", "Erotylidae", "Eucnemidae", "Geotrupidae", "Glaphyridae", "Histeridae", "Hydrophilidae", "Hybosoridae", "Kateretidae", "Laemophloeidae", "Lampyridae", "Latridiidae", "Leiodidae", "Lymexylidae", "Lucanidae", "Lycidae", "Megalopodidae", "Meloidae", "Melyridae", "Monotomidae", "Mordellidae", "Mycetophagidae", "Mycteridae", "Nemonychidae", "Nitidulidae", "Oedemeridae", "Orsodacnidae", "Phalacridae", "Ptinidae", "Ptiliidae", "Pyrochroidae", "Ripiphoridae", "Salpingidae", "Scarabaeidae", "Scraptiidae", "Scirtidae", "Silvanidae", "Sphaeroceridae", "Staphylinidae", "Stenotrachelidae", "Tenebrionidae", "Throscidae", "Trogossitidae", "Zopheridae")
+flower_visitors <- c("Agyrtidae", "Anthicidae", "Anthribidae", "Attelabidae", "Belidae", "Biphyllidae", "Boganiidae", "Bostrichidae", "Byrrhidae", "Brentidae", "Byturidae", "Buprestidae", "Cantharidae", "Carabidae", "Cerambycidae", "Chrysomelidae", "Cicindelidae", "Cleridae", "Coccinellidae", "Corylophidae", "Cryptophagidae", "Cucujidae", "Curculionidae", "Dascillidae", "Dermestidae", "Dytiscidae", "Elateridae", "Erotylidae", "Eucnemidae", "Geotrupidae", "Glaphyridae", "Histeridae", "Hydrophilidae", "Hybosoridae", "Kateretidae", "Laemophloeidae", "Lampyridae", "Latridiidae", "Leiodidae", "Lymexylidae", "Lucanidae", "Lycidae", "Megalopodidae", "Meloidae", "Melyridae", "Monotomidae", "Mordellidae", "Mycetophagidae", "Mycteridae", "Nemonychidae", "Nitidulidae", "Oedemeridae", "Orsodacnidae", "Phalacridae", "Ptinidae", "Ptiliidae", "Pyrochroidae", "Ripiphoridae", "Salpingidae", "Scarabaeidae", "Scraptiidae", "Scirtidae", "Silvanidae", "Sphaeroceridae", "Staphylinidae", "Stenotrachelidae", "Tenebrionidae", "Throscidae", "Trogossitidae", "Zopheridae")
 
-pollinator_families <- c("Anthribidae", "Attelabidae", "Belidae", "Biphyllidae", "Boganiidae", "Brentidae", "Byturidae", "Buprestidae", "Cantharidae", "Carabidae", "Cerambycidae", "Chrysomelidae", "Cleridae", "Coccinellidae", "Corylophidae", "Cryptophagidae", "Curculionidae", "Dermestidae", "Elateridae", "Erotylidae", "Geotrupidae", "Glaphyridae", "Hybosoridae", "Kateretidae", "Lampyridae", "Latridiidae", "Lymexylidae", "Lucanidae", "Lycidae", "Meloidae", "Melyridae", "Monotomidae", "Mordellidae", "Mycetophagidae", "Nitidulidae", "Oedemeridae", "Ptinidae", "Ptiliidae", "Pyrochroidae", "Scarabaeidae", "Scraptiidae", "Scirtidae", "Silvanidae", "Sphaeroceridae", "Staphylinidae", "Stenotrachelidae", "Tenebrionidae", "Throscidae")
+pollinator_families <- c("Anthicidae", "Anthribidae", "Attelabidae", "Belidae", "Biphyllidae", "Boganiidae", "Brentidae", "Byturidae", "Buprestidae", "Cantharidae", "Carabidae", "Cerambycidae", "Chrysomelidae", "Cleridae", "Coccinellidae", "Corylophidae", "Cryptophagidae", "Curculionidae", "Dermestidae", "Elateridae", "Erotylidae", "Geotrupidae", "Glaphyridae", "Hybosoridae", "Hydrophilidae", "Kateretidae", "Lampyridae", "Latridiidae", "Lymexylidae", "Lucanidae", "Lycidae", "Meloidae", "Melyridae", "Monotomidae", "Mordellidae", "Mycetophagidae", "Nitidulidae", "Oedemeridae", "Ptinidae", "Ptiliidae", "Pyrochroidae", "Scarabaeidae", "Scraptiidae", "Scirtidae", "Silvanidae", "Sphaeroceridae", "Staphylinidae", "Stenotrachelidae", "Tenebrionidae", "Throscidae")
 
 beetle_taxonomy$flower_visitor <- beetle_taxonomy$Family %in% flower_visitors
 beetle_taxonomy$pollinator <- beetle_taxonomy$Family %in% pollinator_families
