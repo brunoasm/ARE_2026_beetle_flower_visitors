@@ -1955,7 +1955,7 @@ beetle_matrix <- df_for_pcoa %>%
 # Perform PCoA using Jaccard distance
 pcoa <- cmdscale(vegdist(beetle_matrix, method = "jaccard"), k = 2, eig = TRUE)
 
-# Create points dataframe
+# Create points data frame
 points_df <- data.frame(
   PCoA1 = pcoa$points[,1],
   PCoA2 = pcoa$points[,2],
@@ -1971,14 +1971,16 @@ all_arrows_df <- data.frame(
 ) %>%
   mutate(vector_length = sqrt(PCoA1^2 + PCoA2^2))
 
-# Get top 10 for labeled arrows
+# Get top 8 for labeled arrows
 arrows_df <- all_arrows_df %>%
   arrange(desc(vector_length)) %>%
   slice_head(n = 8)
+arrows_df
 
 # Calculate proportion of variance explained
 var_explained <- round(100 * pcoa$eig / sum(pcoa$eig), 2)
 
+set.seed(4637)
 # Create the plot
 pcoa_plot = ggplot() +
   # Add light arrows for all families
@@ -2000,7 +2002,7 @@ pcoa_plot = ggplot() +
                size = 0.3,
                color = "gray30") +
   geom_text_repel(data = arrows_df,
-                  aes(x = PCoA1, y = PCoA2, label = Family),
+                  aes(x = PCoA1, y = PCoA2, label = substr(Family, 1, 2)),
                   size = 1.8,
                   force_pull = 10,
                   force = 1,
