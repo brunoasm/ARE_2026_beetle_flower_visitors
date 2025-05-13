@@ -7,8 +7,8 @@ import time
 import os
 
 BATCH_SIZE = 70
-HARVARD_PROXY = os.environ['HARVARD_PROXY_URL']
-UCHICAGO_PROXY = os.environ['UCHICAGO_PROXY_URL']
+UNI_PROXY = os.environ['UNIVERSITY_PROXY_URL']
+UNI2_PROXY = os.environ['UNIVERSITY2_PROXY_URL']
 CROSSREF_BASE = "https://api.crossref.org/works/"
 CSV_PATH = Path("analysis/classified_studies.csv")
 
@@ -75,8 +75,8 @@ def get_proxy_url(article_url):
     """Determine which proxy to use based on the article URL."""
     print(f"DEBUG - Checking URL for proxy selection: {article_url}")  # Debug print
     is_oup = 'oup' in article_url.lower() or 'academic.oup.com' in article_url.lower()
-    selected_proxy = UCHICAGO_PROXY if is_oup else HARVARD_PROXY
-    print(f"DEBUG - Selected proxy: {'UChicago' if is_oup else 'Harvard'}")  # Debug print
+    selected_proxy = UNI_PROXY if is_oup else UNI2_PROXY
+    print(f"DEBUG - Selected proxy: {'Uni1' if is_oup else 'Uni2'}")  # Debug print
     return f"{selected_proxy}{article_url}"
 
 def mark_batch_processed(full_df, batch_dois):
@@ -135,8 +135,8 @@ def process_studies():
                     final_url = article['url']
                     print(f"Opening: {article['doi']} (OUP - direct access)")
                 else:
-                    final_url = f"{HARVARD_PROXY}{article['url']}"
-                    print(f"Opening: {article['doi']} (with Harvard proxy)")
+                    final_url = f"{UNI_PROXY}{article['url']}"
+                    print(f"Opening: {article['doi']} (with Uni1 proxy)")
                 webbrowser.get('firefox').open(final_url, new=2, autoraise=False)
                 time.sleep(0.7)  # Delay between opening Firefox windows
         
@@ -144,8 +144,8 @@ def process_studies():
         if pdf_articles:
             print("\nOpening PDF articles...")
             for article in pdf_articles:
-                final_url = f"{HARVARD_PROXY}{article['url']}"
-                print(f"Opening: {article['doi']} ({article['publisher']} PDF with Harvard proxy)")
+                final_url = f"{UNI_PROXY}{article['url']}"
+                print(f"Opening: {article['doi']} ({article['publisher']} PDF with Uni1 proxy)")
                 webbrowser.get('firefox').open(final_url, new=2, autoraise=False)
                 time.sleep(0.5)  # Delay between opening Firefox windows
         

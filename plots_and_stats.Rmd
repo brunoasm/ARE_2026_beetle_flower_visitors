@@ -1126,7 +1126,7 @@ p1 = ggplot() +
              aes(x = label_x, y = label_y,
                  size = n_records, # use sqrt for area proportional scaling
                  color = beetle_fraction),
-             alpha = 0.7) +
+             alpha = 0.7, shape = 16) +
   # Customize appearance
   scale_size_continuous(name = "Number of Records",
                        breaks = c(1, 10, 100),
@@ -1175,7 +1175,7 @@ p2 = ggplot() +
              aes(x = label_x, y = label_y,
                  size = n_records, # use sqrt for area proportional scaling
                  color = beetle_poll_fraction),
-             alpha = 0.7) +
+             alpha = 0.7, shape = 16) +
   # Customize appearance
   scale_size_continuous(name = "Number of Records",
                        range = c(0, 3.5)) +
@@ -1989,7 +1989,8 @@ pcoa_plot = ggplot() +
              size = 0.5,
              alpha = 0.6,
              width = 0.01,
-             height = 0.01) +
+             height = 0.01,
+             shape = 16) +
   # Add darker arrows for top 10 families
   geom_segment(data = all_arrows_df,
                aes(x = 0, y = 0, xend = PCoA1, yend = PCoA2),
@@ -2029,6 +2030,11 @@ pcoa_plot = ggplot() +
 
 pcoa_plot
 ```
+
+```{r}
+arrows_df %>% arrange(desc(vector_length))
+```
+
 
 Let's now combine this plot with the others:
 ```{r}
