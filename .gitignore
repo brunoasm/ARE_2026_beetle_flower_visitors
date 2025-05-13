@@ -1,2 +1,22 @@
 .DS_Store
 .Rproj.user
+
+# R files
+.RData
+.Rhistory
+*.Rproj
+
+# Supplementary tables
+Supplementary_Table_2.md
+Supplementary_Table_2.rtf
+Supplementary_Table_2_edited.docx
+
+# Archives
+analysis/archive/
+archive/
+
+# PDF files
+pdfs/export_20250131/export_20250131.bib.backup
+pdfs/export_20250131/files/
+pdfs/export_20250131/files_backup/
+pdfs/export_20250131/files_kept/
