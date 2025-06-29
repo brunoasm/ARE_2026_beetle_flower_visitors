@@ -29,6 +29,7 @@ library(ggtree)
 library(phytools)
 library(vegan)
 library(ggrepel)
+library(arrow)
 
 use_condaenv("ARE_review")
 rm(list=ls())
@@ -288,7 +289,7 @@ combined_records %>% filter(country_ISO_code %in% higher_lat_range_codes) %>%
 We will now use Claude to map these states to names that exist in the natural earth database. Let's save a table to use as project knowledge.
 
 ```{r}
-existing_states %>% write_csv("~/Downloads/ne_states.csv")
+#existing_states %>% write_csv("~/Downloads/ne_states.csv")
 ```
 
 This is the mapping that Claude generated, with some manual corrections:
@@ -1066,6 +1067,19 @@ filtered_state_level_records = filtered_state_level_records %>%
 
 filtered_state_level_records
 ```
+
+Let's now save this table, as this will be our main dataset. Let's save in parquet format to preserve column formats and maintain compatibility with systems other than R.
+
+```{r}
+df_for_parquet <- filtered_state_level_records |>
+  mutate(
+    observation_time = sapply(observation_time, function(x) paste(x, collapse = "|")),
+    visitors = sapply(visitors, function(x) paste(x, collapse = "|")),
+    beetle_families = sapply(beetle_families, function(x) paste(x, collapse = "|"))
+  )
+write_parquet(df_for_parquet, "tables/filtered_state_level_records.parquet")
+```
+
 # Make plots
 
 Now we will use this filtered dataset to make plots showing the global distribution of beetle flower visitors and pollinators, as well as the effect of sampling method and time.
