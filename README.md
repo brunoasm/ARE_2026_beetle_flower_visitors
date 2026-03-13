@@ -2,7 +2,9 @@
 
 This repository contains the code used for data collection, processing, and analysis for our study on beetles as flower visitors and pollinators across plant families. The scripts automate a reproducible workflow from literature search to data extraction and visualization. Citation:
 
-``` de Medeiros BAS, Peris D. 2026. The Evolution of Flower Beetles as Visitors and Pollinators. Annual Review of Entomology. in press. ```
+```
+de Medeiros BAS, Peris D (2026) The evolution of flower beetles as visitors and pollinators. Annual Review of Entomology 71:557-575 https://doi.org/10.1146/annurev-ento-121423-013404
+ ```
 
 ## Overview
 
